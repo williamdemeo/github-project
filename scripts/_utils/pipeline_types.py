@@ -27,11 +27,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
-    TypeVar, Generic, Optional, Union, Dict, List, Tuple,
-    NamedTuple, Callable, Any, Protocol, runtime_checkable
+    TypeVar, Generic, Optional, Dict, List, Tuple,
+    Callable, Any, Protocol, runtime_checkable
 )
 from enum import Enum, auto
-import json
 
 # =============================================================================
 # Generic Type Variables
@@ -497,4 +496,4 @@ if __name__ == "__main__":
 
     print(f"Files processed: {new_state.statistics.files_processed}")
     print(f"Current stage: {new_state.stage}")
-    print(f"✅ Type system working correctly!")
+    print("✅ Type system working correctly!")
