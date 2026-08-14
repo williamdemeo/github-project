@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Nix
+result
+.direnv/
+
+# Editors
+*~
+.vscode/
+.idea/
