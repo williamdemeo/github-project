@@ -73,6 +73,8 @@ def run_command(
                 reader.start()
             for reader in readers:
                 reader.join()
+            process.stdout.close()
+            process.stderr.close()
 
             # Wait for the process to complete and get the return code
             process.wait()

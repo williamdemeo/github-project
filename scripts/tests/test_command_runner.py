@@ -20,6 +20,7 @@ Description:
 """
 from __future__ import annotations
 
+import logging
 import sys
 import tempfile
 import threading
@@ -29,6 +30,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from _utils.command_runner import run_command  # noqa: E402
+
+
+def setUpModule() -> None:
+    # The stream-output tests drain 200 KB of child stderr through the
+    # logger; without this the test run's output is that flood.
+    logging.disable(logging.CRITICAL)
+
+
+def tearDownModule() -> None:
+    logging.disable(logging.NOTSET)
 
 # Comfortably beyond any OS pipe buffer (Linux default: 64 KiB).
 STDERR_FLOOD = 200_000
