@@ -16,9 +16,14 @@ surrounding prose.  Two commands, two directions:
 
 ## Routine refresh
 
-- `make update-check` — is the file current?  Exit 0 = current, 1 =
-  drifted, 2 = the check itself failed (auth, network — NOT drift; fix
-  the cause before trusting any answer).
+- `make update-check` — is the file current?  Succeeds when current,
+  fails otherwise; the output says whether the file drifted or the
+  check itself failed (auth, network — NOT drift; fix the cause before
+  trusting any answer).  When an exit code must distinguish drift from
+  failure, call the script directly —
+  `python3 scripts/gh_project_update.py docs/GITHUB_PROJECT.md --check`
+  follows diff(1) (0 current / 1 drifted / 2 failed); `make` collapses
+  any recipe failure to exit 2.
 - `make update` — rewrite the generated regions from live GitHub state.
   Hand-written prose outside the markers is preserved byte-for-byte.
   Commit the result.

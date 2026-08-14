@@ -84,8 +84,14 @@ that.)
 
    whenever you want the file to reflect reality (state flips like
    `(#7)` → `(#7, closed)`, assignees, edited bodies).  Commit the
-   result.  `make update-check` tells you whether that is needed
-   (exit 0 current / 1 drifted / 2 the check itself failed).
+   result.  `make update-check` tells you whether that is needed: it
+   succeeds when the file is current and fails otherwise, with output
+   saying whether the file drifted or the check itself could not run.
+   (When an exit code must distinguish those two — as the shipped
+   freshness workflow does — call the script directly:
+   `python3 scripts/gh_project_update.py docs/GITHUB_PROJECT.md --check`
+   follows diff(1): 0 current, 1 drifted, 2 failed.  `make` collapses
+   any recipe failure to its own exit 2.)
 
 `make help` lists every target.
 
