@@ -68,7 +68,7 @@ def main() -> int:
     with (STATE / "calls.log").open("a") as log:
         log.write(" ".join(args) + "\n")
 
-    if args[:2] == ["label", "list"]:
+    if args[0] == "api" and args[1].endswith("/labels"):
         print(json.dumps(load("labels.json", [])))
         return 0
 
@@ -99,7 +99,7 @@ def main() -> int:
         print(json.dumps(load("milestones.json", [])))
         return 0
 
-    if args[:2] == ["issue", "list"]:
+    if args[0] == "api" and args[1].endswith("/issues"):
         print(json.dumps(load("issues.json", [])))
         return 0
 

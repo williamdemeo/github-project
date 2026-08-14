@@ -120,9 +120,29 @@ class Advisories(unittest.TestCase):
         self.assertEqual(errors(broken), [])
         self.assertTrue(any("no `**Repository**" in w for w in warnings(broken)))
 
-    def test_duplicate_milestone_number_is_warning(self) -> None:
+
+class StructuralAmbiguities(unittest.TestCase):
+    def test_duplicate_milestone_number_is_error(self) -> None:
+        # ms_title_map keys on the number, so a duplicate makes
+        # issue→milestone attachment ambiguous — populate must refuse.
         broken = PLAN.replace("### Milestone 2 — Polish", "### Milestone 1 — Polish")
-        self.assertTrue(any("more than once" in w for w in warnings(broken)))
+        self.assertTrue(any("more than once" in e for e in errors(broken)))
+
+    def test_malformed_issue_heading_is_error(self) -> None:
+        # `M1-X` never parses, so the heading is invisible to populate
+        # and would be erased when update rebuilds the region.
+        broken = PLAN.replace(
+            "### Issue M1-1: Set up the build",
+            "### Issue M1-X: Set up the build",
+        )
+        self.assertTrue(any("malformed issue heading" in e for e in errors(broken)))
+
+    def test_backtickless_label_bullet_is_error(self) -> None:
+        broken = PLAN.replace(
+            "- `documentation` (0e8a16) — Documentation changes.",
+            "- documentation (0e8a16) — Documentation changes.",
+        )
+        self.assertTrue(any("did not parse" in e for e in errors(broken)))
 
 
 if __name__ == "__main__":

@@ -88,8 +88,8 @@ class FreshPopulate(FakeGhHarness):
 
         # One snapshot per run — not one list call per created entity
         # (#293 item 6: this used to be 1 ListIssues per issue create).
-        self.assertEqual(self.calls("label list"), 1)
-        self.assertEqual(self.calls("issue list"), 1)
+        self.assertEqual(self.calls("octocat/demo/labels"), 1)
+        self.assertEqual(self.calls("octocat/demo/issues"), 1)
         self.assertEqual(
             sum("milestones" in line and "POST" not in line
                 for line in (self.state / "calls.log").read_text().splitlines()),
@@ -161,6 +161,68 @@ class CrashSafety(FakeGhHarness):
         (self.state / "fail_create_issue_at").unlink()
         second = self.populate()
         self.assertEqual(second.returncode, 0, second.stderr)
+        titles = [i["title"] for i in self.issues_on_fake_github()]
+        self.assertEqual(len(titles), 4)
+        self.assertEqual(len(set(titles)), 4, f"duplicates: {titles}")
+
+
+class TitleEditResilience(FakeGhHarness):
+    def test_stripped_prefix_does_not_duplicate(self) -> None:
+        # After a successful populate, someone edits an issue title on
+        # GitHub and removes its [MN-k] prefix.  The recorded (#N) in
+        # the plan file is the fallback join key: a re-run must match
+        # the renamed issue by number, not re-create it.
+        self.assertEqual(self.populate().returncode, 0)
+        issues = self.issues_on_fake_github()
+        victim = next(i for i in issues if i["title"].startswith("[M1-1]"))
+        victim["title"] = "Storage layer, renamed with no prefix"
+        (self.state / "issues.json").write_text(json.dumps(issues))
+
+        rerun = self.populate()
+        self.assertEqual(rerun.returncode, 0, rerun.stderr + rerun.stdout)
+        self.assertEqual(len(self.issues_on_fake_github()), 4)
+        self.assertIn(f"- exists: issue #{victim['number']}", rerun.stdout)
+
+        # Update still works: the prefix-less issue simply leaves the
+        # region (it has no stable identifier to render under).
+        upd = self.update()
+        self.assertEqual(upd.returncode, 0, upd.stderr)
+        text = self.plan_path.read_text(encoding="utf-8")
+        self.assertNotIn("renamed with no prefix", text)
+
+
+class MilestoneAvailability(FakeGhHarness):
+    def test_issues_only_without_milestones_fails_and_creates_nothing(self) -> None:
+        # --issues-only documents that milestones must already exist.
+        # On a repo with none, every issue whose plan-declared milestone
+        # is missing is skipped and counted as a failure — creating it
+        # milestone-less would leave GitHub state permanently incomplete
+        # (populate never revisits existing issues).
+        proc = self.populate("--issues-only")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertEqual(self.issues_on_fake_github(), [])
+        self.assertIn("not available on GitHub", proc.stdout)
+
+
+class WriteBackAbort(FakeGhHarness):
+    @unittest.skipIf(os.geteuid() == 0, "root ignores file permissions")
+    def test_unwritable_plan_aborts_after_first_creation(self) -> None:
+        # The crash-safety contract is persist-before-next-mutation, so
+        # when persisting fails the run must stop mutating GitHub, not
+        # continue with numbers silently lost.
+        self.plan_path.chmod(0o444)
+        try:
+            proc = self.populate()
+        finally:
+            self.plan_path.chmod(0o644)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertEqual(len(self.issues_on_fake_github()), 1)
+        self.assertIn("aborting before further mutations", proc.stderr)
+
+        # The rerun is safe: the snapshot matches the orphaned issue by
+        # its [MN-k] prefix, and only the remaining three are created.
+        rerun = self.populate()
+        self.assertEqual(rerun.returncode, 0, rerun.stderr)
         titles = [i["title"] for i in self.issues_on_fake_github()]
         self.assertEqual(len(titles), 4)
         self.assertEqual(len(set(titles)), 4, f"duplicates: {titles}")
@@ -250,7 +312,7 @@ class PopulateRefusesBrokenPlans(FakeGhHarness):
         proc = self.populate("--dry-run")
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertIn("duplicate issue ID", proc.stderr)
-        self.assertEqual(self.calls("issue list"), 0)  # refused before fetching
+        self.assertEqual(self.calls("octocat/demo/issues"), 0)  # refused before fetching
 
 
 if __name__ == "__main__":

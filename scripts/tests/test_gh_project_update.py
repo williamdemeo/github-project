@@ -94,6 +94,17 @@ class AssembleFile(unittest.TestCase):
         self.assertEqual(reparsed.manuals, parsed.manuals)
 
 
+class GroupByMilestone(unittest.TestCase):
+    def test_non_planning_issues_are_excluded(self) -> None:
+        # The snapshot carries id="" records (prefix-less titles) for
+        # populate's number matching; rendering must not list them.
+        groups = upd.group_by_milestone([
+            issue("M1-1", "[M1-1] Real", gh_number=1, milestone_idx=1),
+            issue("", "Ad-hoc bug report", gh_number=9, milestone_idx=1),
+        ])
+        self.assertEqual([i.id for i in groups[1]], ["M1-1"])
+
+
 class StripIdPrefix(unittest.TestCase):
     def test_strip(self) -> None:
         self.assertEqual(upd.strip_id_prefix("[M1-2] Title"), "Title")

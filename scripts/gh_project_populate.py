@@ -171,6 +171,7 @@ def execute_issues(
     client: GitHubClient,
     plan: IssuePlan,
     ms_title_map: dict[int, str],
+    declared_milestones: set[int],
     available_labels: set[str],
     md_path: Path,
     text: str,
@@ -179,12 +180,22 @@ def execute_issues(
     """Create the planned issues with immediate number write-back.
 
     Returns (current file text, failures).  The plan file is persisted
-    after EACH creation, before the next remote mutation: a later
-    failure must not lose an already-assigned number, or a rerun would
-    file a duplicate.
+    after EACH creation, before the next remote mutation — that is the
+    crash-safety contract, so a write-back that cannot be persisted
+    ABORTS the run (counted as a failure) rather than continuing to
+    mutate GitHub while numbers silently stop landing on disk.  Nothing
+    is lost by aborting: created issues are matched by the snapshot on
+    the next run.
+
+    An issue whose plan-declared milestone is unavailable (creation
+    failed, or --issues-only before milestones exist) is skipped and
+    counted as a failure: creating it milestone-less would leave GitHub
+    state permanently incomplete, since populate never revisits existing
+    issues.  Issues referencing a milestone the plan never declared are
+    created without one (a plan with no Milestones section is legal).
     """
     failed = 0
-    for issue in plan.to_create:
+    for position, issue in enumerate(plan.to_create):
         missing = [
             lbl for lbl in issue.labels
             if lbl.casefold() not in available_labels
@@ -199,11 +210,22 @@ def execute_issues(
             continue
 
         ms_title = ms_title_map.get(issue.milestone_idx)
-        if ms_title is None and issue.milestone_idx != 0:
-            print(
-                f"  ~ issue {issue.id}: milestone {issue.milestone_idx} "
-                f"unavailable; creating without a milestone"
-            )
+        if ms_title is None:
+            if issue.milestone_idx in declared_milestones:
+                failed += 1
+                print(
+                    f"  ! issue {issue.id}: skipped — milestone "
+                    f"{issue.milestone_idx} is declared in the plan but "
+                    f"not available on GitHub (create milestones first, "
+                    f"then re-run)"
+                )
+                continue
+            if issue.milestone_idx != 0:
+                print(
+                    f"  ~ issue {issue.id}: milestone {issue.milestone_idx} "
+                    f"is not declared in the plan; creating without a "
+                    f"milestone"
+                )
 
         result = client.create_issue(issue, milestone_title=ms_title)
         if result.is_err:
@@ -215,19 +237,25 @@ def execute_issues(
         gh_number = result.unwrap()
         print(f"  created issue #{gh_number}: {issue.title}")
 
-        text, found = record_issue_number(text, issue.id, gh_number)
-        if not found:
-            print(
-                f"  ~ could not write #{gh_number} back for {issue.id} "
-                f"(heading not found)", file=sys.stderr,
+        new_text, found = record_issue_number(text, issue.id, gh_number)
+        write_result = write_text(md_path, new_text) if found else None
+        if not found or write_result.is_err:
+            reason = (
+                f"heading for {issue.id} not found"
+                if not found else str(write_result.unwrap_err())
             )
-        else:
-            write_result = write_text(md_path, text)
-            if write_result.is_err:
-                print(
-                    f"  ~ write-back failed: {write_result.unwrap_err()}",
-                    file=sys.stderr,
-                )
+            remaining = len(plan.to_create) - position - 1
+            failed += 1
+            print(
+                f"  ! could not persist #{gh_number} for {issue.id} "
+                f"({reason}); aborting before further mutations "
+                f"({remaining} issue(s) not attempted).  Issue "
+                f"#{gh_number} IS live on GitHub; fix the problem and "
+                f"re-run — the snapshot match makes the rerun safe.",
+                file=sys.stderr,
+            )
+            return text, failed
+        text = new_text
         time.sleep(delay)
     return text, failed
 
@@ -399,7 +427,8 @@ def main() -> int:
             | {lbl.name.casefold() for lbl in label_plan.to_create}
         )
         _text, issue_failed = execute_issues(
-            client, issue_plan, ms_title_map, available,
+            client, issue_plan, ms_title_map,
+            {m.number for m in plan.milestones}, available,
             args.markdown, text, args.delay,
         )
         failures += issue_failed

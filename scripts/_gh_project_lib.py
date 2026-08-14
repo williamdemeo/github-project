@@ -581,9 +581,11 @@ def plan_issues(desired: tuple[Issue, ...], existing: tuple[Issue, ...]) -> Issu
     The `[MN-k]` title prefix is the primary join key (robust to
     post-creation edits of the descriptive title).  A `(#N)` number
     recorded in the plan file is the secondary key: it keeps the guard
-    intact even if someone strips the prefix from the title on GitHub.
+    intact even if someone strips the prefix from the title on GitHub
+    (such issues arrive from the snapshot with id="", so only the
+    number can match them).
     """
-    by_id = {e.id: e for e in existing}
+    by_id = {e.id: e for e in existing if e.id}
     by_number = {e.gh_number: e for e in existing if e.gh_number is not None}
 
     to_create: list[Issue] = []
@@ -624,7 +626,12 @@ def lint_plan(text: str) -> tuple[Problem, ...]:
     Errors (populate must not run):
       - unbalanced / mismatched / nested / stray generated-region markers
       - duplicate region ids
+      - a `### Issue ...` heading that does not match
+        `### Issue MN-k: Title` (such a heading is invisible to populate
+        and silently erased when update rebuilds its region)
       - duplicate issue IDs
+      - duplicate milestone numbers (issue→milestone attachment keys on
+        the number, so a duplicate makes attachment ambiguous)
       - duplicate label names, or two plan labels that collide after
         normalization (case/whitespace)
       - an issue whose milestone number has no `### Milestone N` entry
@@ -632,11 +639,11 @@ def lint_plan(text: str) -> tuple[Problem, ...]:
       - a `milestone-N` region id with no matching milestone
       - an issue referencing a label absent from the `## Labels` section
         (when that section exists — creation on GitHub would fail)
-      - a malformed entry line inside `## Labels`
+      - a bullet inside `## Labels` that does not parse as
+        `` - `name` (RRGGBB) — description ``
 
     Warnings:
       - no `**Repository**:` header (the CLI --repo can still supply it)
-      - duplicate milestone numbers
     """
     problems: list[Problem] = []
 
@@ -668,9 +675,26 @@ def lint_plan(text: str) -> tuple[Problem, ...]:
         ))
 
     ms_numbers = [m.number for m in plan.milestones]
-    for n in {n for n in ms_numbers if ms_numbers.count(n) > 1}:
+    for n in sorted({n for n in ms_numbers if ms_numbers.count(n) > 1}):
         problems.append(Problem(
-            "warning", f"milestone number {n} is defined more than once"))
+            "error",
+            f"milestone number {n} is defined more than once — "
+            f"issue→milestone attachment keys on the number, so populate "
+            f"cannot tell which milestone issues M{n}-* belong to",
+        ))
+
+    # A heading that says `### Issue` but does not parse is worse than a
+    # missing one: populate never pushes it, and the next update erases
+    # it when the surrounding generated region is rebuilt from GitHub.
+    for m in re.finditer(r"^### Issue\b[^\n]*$", text, re.MULTILINE):
+        if not ISSUE_HEADING_RE.match(m.group(0)):
+            problems.append(Problem(
+                "error",
+                f"malformed issue heading {m.group(0)!r} — expected "
+                f"`### Issue MN-k: Title`; as written it is invisible to "
+                f"populate and will be erased by the next update",
+                _line_of(text, m.start()),
+            ))
 
     issue_ids = [i.id for i in plan.issues]
     for dup in sorted({i for i in issue_ids if issue_ids.count(i) > 1}):
@@ -712,17 +736,20 @@ def _lint_labels(text: str, plan: ProjectPlan) -> list[Problem]:
         start = section.end()
         nxt = re.search(r"^## (?!#)", text[start:], re.MULTILINE)
         end = start + nxt.start() if nxt else len(text)
-        entry_starts = re.finditer(r"^\s*[-*]\s+`", text[start:end], re.MULTILINE)
-        parsed_count = len(explicit)
-        listed_count = sum(1 for _ in entry_starts)
-        if listed_count > parsed_count:
-            problems.append(Problem(
-                "error",
-                f"## Labels section: {listed_count - parsed_count} "
-                f"entr{'y' if listed_count - parsed_count == 1 else 'ies'} "
-                f"did not parse (expected `- `name` (RRGGBB) — description`)",
-                _line_of(text, section.start()),
-            ))
+        # Every bullet in the section must parse — including ones missing
+        # the backticks entirely (`- documentation (0e8a16) — ...`), which
+        # would otherwise silently vanish from the label set.
+        entry_re = re.compile(
+            r"^\s*[-*]\s+`([^`]+)`\s*\(([0-9a-fA-F]{6})\)\s*(?:—|–|-|:)\s*\S",
+        )
+        for m in re.finditer(r"^\s*[-*]\s+\S[^\n]*$", text[start:end], re.MULTILINE):
+            if not entry_re.match(m.group(0)):
+                problems.append(Problem(
+                    "error",
+                    f"## Labels entry {m.group(0).strip()!r} did not parse "
+                    f"(expected `- `name` (RRGGBB) — description`)",
+                    _line_of(text, start + m.start()),
+                ))
 
     names = [l.name for l in explicit]
     for dup in sorted({n for n in names if names.count(n) > 1}):
@@ -802,10 +829,17 @@ class GitHubClient:
         )
 
     def list_labels(self) -> Result[list[Label], PipelineError]:
-        """Pull every label currently defined on the repository."""
+        """Pull every label currently defined on the repository.
+
+        Uses the REST endpoint with --paginate: `gh label list --limit N`
+        imposes a fixed ceiling, and a silently truncated snapshot would
+        defeat the collision detection it feeds.
+        """
         cmd = self._run(
-            "label", "list", "--repo", self.repo, "--limit", "200",
-            "--json", "name,color,description",
+            "api", f"repos/{self.repo}/labels",
+            "--paginate",
+            "-X", "GET",
+            "-F", "per_page=100",
         )
         return cmd.and_then(_parse_labels_json)
 
@@ -829,17 +863,28 @@ class GitHubClient:
     def list_issues(self) -> Result[list[Issue], PipelineError]:
         """Pull every issue (open and closed) from the repository.
 
+        Uses the REST endpoint with --paginate: `gh issue list --limit N`
+        imposes a fixed ceiling, and a truncated snapshot would make
+        populate re-create issues it failed to see and update omit them
+        from generated regions.  Pull requests (which the REST issues
+        endpoint includes) are filtered out by the parser.
+
+        Issues whose title carries no parseable `[MN-k]` prefix are
+        returned with `id=""`: populate needs them (their number is the
+        fallback join key when a title was edited on GitHub), while
+        update filters them out of rendering.
+
         Returned `Issue.milestone_idx` is inferred from the issue's
         `milestone-N-*` label rather than from GitHub's milestone
         assignment; the label is the source of truth in this convention
         because it survives milestone renames.
         """
         cmd = self._run(
-            "issue", "list",
-            "--repo", self.repo,
-            "--state", "all",
-            "--limit", "1000",
-            "--json", "number,title,body,labels,milestone,state,assignees",
+            "api", f"repos/{self.repo}/issues",
+            "--paginate",
+            "-X", "GET",
+            "-F", "state=all",
+            "-F", "per_page=100",
         )
         return cmd.and_then(_parse_issues_json)
 
@@ -930,13 +975,21 @@ def _parse_issues_json(stdout: str) -> Result[list[Issue], PipelineError]:
     def to_issues(data: list[dict]) -> list[Issue]:
         out: list[Issue] = []
         for item in data:
+            if "pull_request" in item:
+                # The REST issues endpoint returns pull requests too;
+                # they are never planning issues.
+                continue
             title = item.get("title", "")
             parsed = parse_issue_id(title)
-            if parsed is None:
-                # Not a planning issue (e.g. an ad-hoc bug report); skip
-                # silently — update does not list these.
-                continue
-            issue_id, ms_idx, _ord, _suffix, _rest = parsed
+            # An unparseable title (e.g. an ad-hoc bug report, or a
+            # planning issue whose prefix someone stripped on GitHub) is
+            # kept with id="" rather than dropped: populate matches such
+            # issues by their recorded (#N) number — dropping them here
+            # would make that fallback unreachable and re-create the
+            # issue.  Update filters id="" records out of rendering.
+            issue_id, ms_idx = ("", None)
+            if parsed is not None:
+                issue_id, ms_idx, _ord, _suffix, _rest = parsed
             label_names = tuple(lbl["name"] for lbl in item.get("labels", []) or [])
             # Prefer the milestone-N-* label; fall back to the leading
             # integer of GitHub's milestone title.  The label is canonical
@@ -946,7 +999,7 @@ def _parse_issues_json(stdout: str) -> Result[list[Issue], PipelineError]:
                 gh_ms = item.get("milestone") or {}
                 gh_title = gh_ms.get("title", "")
                 tm = re.match(r"^(\d+)\.", gh_title)
-                inferred = int(tm.group(1)) if tm else ms_idx
+                inferred = int(tm.group(1)) if tm else (ms_idx if ms_idx is not None else 0)
             out.append(Issue(
                 id=issue_id,
                 title=title,

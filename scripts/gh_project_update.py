@@ -77,8 +77,17 @@ from _utils.file_ops import read_text, write_text  # noqa: E402
 # ── Issue grouping and sorting ───────────────────────────────────────────────
 
 def group_by_milestone(issues: list[Issue]) -> dict[int, list[Issue]]:
+    """Group planning issues by milestone for region rendering.
+
+    Issues with id="" (no parseable `[MN-k]` prefix — ad-hoc bug
+    reports, or planning issues whose prefix was stripped on GitHub) are
+    excluded: the snapshot carries them for populate's number-based
+    matching, but they cannot be rendered under a stable identifier.
+    """
     out: dict[int, list[Issue]] = {}
     for issue in issues:
+        if not issue.id:
+            continue
         out.setdefault(issue.milestone_idx, []).append(issue)
     return out
 

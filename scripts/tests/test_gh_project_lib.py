@@ -8,6 +8,7 @@ Description:
 """
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -358,21 +359,60 @@ class PlanIssues(unittest.TestCase):
         self.assertEqual(plan.existing[0][1].gh_number, 3)
 
     def test_match_by_recorded_number(self) -> None:
-        # Someone stripped the [M1-1] prefix on GitHub; the recorded (#3)
-        # in the plan file still prevents a duplicate...
+        # Someone stripped the [M1-1] prefix on GitHub.  The snapshot
+        # carries such issues with id="" (the parser must not drop them,
+        # or this fallback would be unreachable); the recorded (#3) in
+        # the plan file prevents a duplicate.
         desired = (Issue("M1-1", "[M1-1] A", "b", gh_number=3),)
-        # ...but note the live issue only appears in the snapshot if its
-        # title still parses; simulate a live issue whose ID changed.
-        existing = (Issue("M9-9", "[M9-9] Retitled", "b", gh_number=3),)
+        existing = (Issue("", "A, prefix stripped", "b", gh_number=3),)
         plan = plan_issues(desired, existing)
         self.assertEqual(plan.to_create, ())
         self.assertEqual(plan.existing[0][1].gh_number, 3)
+
+    def test_blank_ids_never_match_each_other(self) -> None:
+        # Two different prefix-less live issues must not collapse into
+        # one by their empty id.
+        desired = (Issue("M1-1", "[M1-1] A", "b"),)
+        existing = (
+            Issue("", "Ad-hoc bug", "b", gh_number=8),
+            Issue("", "Another ad-hoc", "b", gh_number=9),
+        )
+        plan = plan_issues(desired, existing)
+        self.assertEqual([i.id for i in plan.to_create], ["M1-1"])
 
     def test_new_issue(self) -> None:
         desired = (Issue("M1-2", "[M1-2] New", "b"),)
         existing = (Issue("M1-1", "[M1-1] Old", "b", gh_number=3),)
         plan = plan_issues(desired, existing)
         self.assertEqual([i.id for i in plan.to_create], ["M1-2"])
+
+
+class ParseIssuesJson(unittest.TestCase):
+    """The snapshot parser must keep prefix-less issues and drop PRs."""
+
+    def test_prefixless_issue_kept_with_blank_id(self) -> None:
+        payload = json.dumps([
+            {"number": 7, "title": "No prefix here", "body": "b",
+             "labels": [{"name": "milestone-1-core"}], "milestone": None,
+             "state": "open", "assignees": []},
+        ])
+        issues = lib._parse_issues_json(payload).unwrap()
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].id, "")
+        self.assertEqual(issues[0].gh_number, 7)
+        self.assertEqual(issues[0].milestone_idx, 1)  # from the label
+
+    def test_pull_requests_are_filtered(self) -> None:
+        payload = json.dumps([
+            {"number": 5, "title": "[M1-1] Real issue", "body": "",
+             "labels": [], "milestone": None, "state": "open",
+             "assignees": []},
+            {"number": 6, "title": "[M1-2] Actually a PR", "body": "",
+             "labels": [], "milestone": None, "state": "open",
+             "assignees": [], "pull_request": {"url": "..."}},
+        ])
+        issues = lib._parse_issues_json(payload).unwrap()
+        self.assertEqual([i.gh_number for i in issues], [5])
 
 
 if __name__ == "__main__":
