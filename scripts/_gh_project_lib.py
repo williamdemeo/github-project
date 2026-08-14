@@ -599,6 +599,159 @@ def plan_issues(desired: tuple[Issue, ...], existing: tuple[Issue, ...]) -> Issu
     return IssuePlan(tuple(to_create), tuple(exists))
 
 
+# ── Structural lint (pure; no network) ──────────────────────────────────────
+
+@dataclass(frozen=True)
+class Problem:
+    """One structural problem found in a plan file."""
+    severity: str            # "error" or "warning"
+    message: str
+    line: Optional[int] = None
+
+
+def _line_of(text: str, offset: int) -> int:
+    """1-based line number of a character offset."""
+    return text.count("\n", 0, offset) + 1
+
+
+def lint_plan(text: str) -> tuple[Problem, ...]:
+    """Validate a plan file's structure without touching the network.
+
+    This is the drift gate this design admits without network access:
+    cheap enough to run on every PR, strict enough that populate refuses
+    to run against a file with errors.
+
+    Errors (populate must not run):
+      - unbalanced / mismatched / nested / stray generated-region markers
+      - duplicate region ids
+      - duplicate issue IDs
+      - duplicate label names, or two plan labels that collide after
+        normalization (case/whitespace)
+      - an issue whose milestone number has no `### Milestone N` entry
+        (when a Milestones section exists)
+      - a `milestone-N` region id with no matching milestone
+      - an issue referencing a label absent from the `## Labels` section
+        (when that section exists — creation on GitHub would fail)
+      - a malformed entry line inside `## Labels`
+
+    Warnings:
+      - no `**Repository**:` header (the CLI --repo can still supply it)
+      - duplicate milestone numbers
+    """
+    problems: list[Problem] = []
+
+    region = parse_file(text)
+    ids: tuple[str, ...] = ()
+    if region.is_err:
+        err = region.unwrap_err()
+        offset = err.context.get("offset") or err.context.get("begin_offset")
+        problems.append(Problem(
+            "error", err.message,
+            _line_of(text, offset) if offset is not None else None,
+        ))
+    else:
+        ids = region.unwrap().ids
+        seen_ids: set[str] = set()
+        for rid in ids:
+            if rid in seen_ids:
+                problems.append(Problem(
+                    "error", f"duplicate generated-region id '{rid}'"))
+            seen_ids.add(rid)
+
+    plan = parse_project_plan(text)
+
+    if plan.repository is None:
+        problems.append(Problem(
+            "warning",
+            "no `**Repository**: owner/name` header; --repo must be "
+            "passed on the command line",
+        ))
+
+    ms_numbers = [m.number for m in plan.milestones]
+    for n in {n for n in ms_numbers if ms_numbers.count(n) > 1}:
+        problems.append(Problem(
+            "warning", f"milestone number {n} is defined more than once"))
+
+    issue_ids = [i.id for i in plan.issues]
+    for dup in sorted({i for i in issue_ids if issue_ids.count(i) > 1}):
+        problems.append(Problem(
+            "error", f"duplicate issue ID {dup} — populate would create "
+                     f"one issue and orphan the other heading"))
+
+    if plan.milestones:
+        known = set(ms_numbers)
+        for issue in plan.issues:
+            if issue.milestone_idx not in known:
+                problems.append(Problem(
+                    "error",
+                    f"issue {issue.id} refers to milestone "
+                    f"{issue.milestone_idx}, which has no "
+                    f"`### Milestone {issue.milestone_idx}` entry",
+                ))
+        for rid in ids:
+            m = re.match(r"^milestone-(\d+)$", rid)
+            if m and int(m.group(1)) not in known:
+                problems.append(Problem(
+                    "error",
+                    f"region '{rid}' has no matching milestone "
+                    f"{int(m.group(1))} in the Milestones section",
+                ))
+
+    problems.extend(_lint_labels(text, plan))
+    return tuple(problems)
+
+
+def _lint_labels(text: str, plan: ProjectPlan) -> list[Problem]:
+    """Label-section checks: well-formedness, duplicates, references."""
+    problems: list[Problem] = []
+
+    section = re.search(r"^## Labels\s*$", text, re.MULTILINE)
+    explicit = _parse_explicit_labels(text)
+
+    if section:
+        start = section.end()
+        nxt = re.search(r"^## (?!#)", text[start:], re.MULTILINE)
+        end = start + nxt.start() if nxt else len(text)
+        entry_starts = re.finditer(r"^\s*[-*]\s+`", text[start:end], re.MULTILINE)
+        parsed_count = len(explicit)
+        listed_count = sum(1 for _ in entry_starts)
+        if listed_count > parsed_count:
+            problems.append(Problem(
+                "error",
+                f"## Labels section: {listed_count - parsed_count} "
+                f"entr{'y' if listed_count - parsed_count == 1 else 'ies'} "
+                f"did not parse (expected `- `name` (RRGGBB) — description`)",
+                _line_of(text, section.start()),
+            ))
+
+    names = [l.name for l in explicit]
+    for dup in sorted({n for n in names if names.count(n) > 1}):
+        problems.append(Problem("error", f"duplicate label `{dup}`"))
+    by_norm: dict[str, str] = {}
+    for n in names:
+        norm = normalize_label_name(n)
+        if norm in by_norm and by_norm[norm] != n:
+            problems.append(Problem(
+                "error",
+                f"labels `{by_norm[norm]}` and `{n}` collide after "
+                f"case/whitespace normalization",
+            ))
+        by_norm.setdefault(norm, n)
+
+    if explicit:
+        known = {normalize_label_name(n) for n in names}
+        for issue in plan.issues:
+            for lbl in issue.labels:
+                if normalize_label_name(lbl) not in known:
+                    problems.append(Problem(
+                        "error",
+                        f"issue {issue.id} references label `{lbl}`, which "
+                        f"is not in the ## Labels section — issue creation "
+                        f"on GitHub would fail",
+                    ))
+    return problems
+
+
 # ── GitHub client ────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
