@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import gh_project_update as upd  # noqa: E402
 from _gh_project_lib import Issue, parse_file  # noqa: E402
+from _gh_project_lib import _parse_issues as lib_parse_issues  # noqa: E402
 from test_gh_project_lib import PLAN  # noqa: E402
 
 
@@ -29,7 +30,9 @@ class RenderIssue(unittest.TestCase):
                   labels=("milestone-1-core",))
         )
         self.assertIn("### Issue M1-1: Set up (#7)\n", out)
-        self.assertIn("**Labels**: `milestone-1-core`\n", out)
+        # Canonical `**Labels:**` — the same spelling the plan parser
+        # recognizes, so rendered blocks are valid plan input.
+        self.assertIn("**Labels:** `milestone-1-core`\n", out)
         self.assertNotIn("closed", out)
         self.assertNotIn("Assignees", out)
 
@@ -44,11 +47,38 @@ class RenderIssue(unittest.TestCase):
             issue("M1-1", "[M1-1] Set up", gh_number=7,
                   assignees=("octocat", "hubot"))
         )
-        self.assertIn("**Assignees**: @octocat, @hubot\n", out)
+        self.assertIn("**Assignees:** @octocat, @hubot\n", out)
 
     def test_empty_body_placeholder(self) -> None:
         out = upd.render_issue(issue("M1-1", "[M1-1] Set up", body="", gh_number=7))
         self.assertIn("_(no description on GitHub)_", out)
+
+    def test_rendered_block_reparses_with_labels_intact(self) -> None:
+        # Round trip: what update renders, the plan parser must read
+        # back — labels recognized as metadata, body free of them.
+        out = upd.render_issue(
+            issue("M1-1", "[M1-1] Set up", gh_number=7,
+                  labels=("milestone-1-core", "documentation"),
+                  assignees=("octocat",))
+        )
+        reparsed = lib_parse_issues(out)
+        self.assertEqual(len(reparsed), 1)
+        self.assertEqual(reparsed[0].labels,
+                         ("milestone-1-core", "documentation"))
+        self.assertEqual(reparsed[0].gh_number, 7)
+        self.assertNotIn("**Labels:**", reparsed[0].body)
+        self.assertNotIn("**Assignees:**", reparsed[0].body)
+
+    def test_marker_in_live_body_is_neutralized(self) -> None:
+        # A GitHub body containing marker-shaped text must not be able
+        # to close (or open) a region on the next parse.
+        hostile = issue(
+            "M1-1", "[M1-1] Set up", gh_number=7,
+            body="Discussing markers:\n<!-- END GENERATED: milestone-1 -->\nend.",
+        )
+        out = upd.render_issue(hostile)
+        self.assertNotRegex(out, r"<!--\s*END GENERATED:")
+        self.assertIn("END GENERATED (escaped):", out)
 
 
 class RenderRegion(unittest.TestCase):

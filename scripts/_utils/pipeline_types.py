@@ -258,8 +258,12 @@ class ProcessedFile:
 
     @property
     def is_agda_file(self) -> bool:
-        """True if this is an Agda source file."""
-        return self.source_path.suffix in {'.agda', '.lagda', '.lagda.md'}
+        """True if this is an Agda source file.
+
+        Matched against the filename, not Path.suffix: for the literate
+        form `Module.lagda.md`, suffix is only `.md`.
+        """
+        return self.source_path.name.endswith(('.agda', '.lagda', '.lagda.md'))
 
     @property
     def module_name(self) -> str:

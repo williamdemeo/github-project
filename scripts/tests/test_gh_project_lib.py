@@ -87,6 +87,10 @@ It shines.
 
 Body of M1-1.
 
+## Acceptance criteria
+
+- CI is green on a fresh clone.
+
 ---
 
 ### Issue M1-2: [M1-2] Write the docs (#42)
@@ -226,7 +230,14 @@ class ParsePlan(unittest.TestCase):
 
     def test_bodies_do_not_leak(self) -> None:
         bodies = {i.id: i.body for i in self.plan.issues}
-        self.assertEqual(bodies["M1-1"], "Body of M1-1.")
+        # `## ` sections are legitimate BODY content (real plans use
+        # `## Tasks` / `## Acceptance criteria` inside issues) — bounding
+        # on generic headings would truncate them.
+        self.assertEqual(
+            bodies["M1-1"],
+            "Body of M1-1.\n\n## Acceptance criteria\n\n"
+            "- CI is green on a fresh clone.",
+        )
         self.assertEqual(bodies["M1-2"], "Body of M1-2.")
         self.assertEqual(bodies["M2-1"], "Body of M2-1.")
         # The last issue's body must not swallow the trailing prose or
@@ -299,6 +310,17 @@ class ParseFileRegions(unittest.TestCase):
         r = parse_file("prose\n<!-- END GENERATED: x -->\n")
         self.assertTrue(r.is_err)
         self.assertIn("no matching BEGIN", r.unwrap_err().message)
+
+    def test_stray_end_before_a_valid_region(self) -> None:
+        # A stray END must be caught even when a well-formed region
+        # follows it — not only at end of file.
+        r = parse_file(
+            "<!-- END GENERATED: stray -->\n"
+            "<!-- BEGIN GENERATED: ok -->\n<!-- END GENERATED: ok -->\n"
+        )
+        self.assertTrue(r.is_err)
+        self.assertIn("no matching BEGIN", r.unwrap_err().message)
+        self.assertIn("stray", r.unwrap_err().message)
 
     def test_nested_begin(self) -> None:
         r = parse_file(
@@ -385,6 +407,32 @@ class PlanIssues(unittest.TestCase):
         existing = (Issue("M1-1", "[M1-1] Old", "b", gh_number=3),)
         plan = plan_issues(desired, existing)
         self.assertEqual([i.id for i in plan.to_create], ["M1-2"])
+
+
+class ParseJsonPagination(unittest.TestCase):
+    """`gh api --paginate` concatenates pages as separate JSON documents;
+    the decoder must consume them all, not fail with 'Extra data'."""
+
+    def test_multiple_documents_are_concatenated(self) -> None:
+        r = lib._parse_json('[{"a": 1}, {"a": 2}][{"a": 3}]', "things")
+        self.assertEqual(r.unwrap(), [{"a": 1}, {"a": 2}, {"a": 3}])
+
+    def test_newline_separated_documents(self) -> None:
+        r = lib._parse_json('[{"a": 1}]\n[{"a": 2}]\n', "things")
+        self.assertEqual(r.unwrap(), [{"a": 1}, {"a": 2}])
+
+    def test_single_document_still_works(self) -> None:
+        self.assertEqual(lib._parse_json('[{"a": 1}]', "things").unwrap(),
+                         [{"a": 1}])
+
+    def test_empty_input_is_empty_list(self) -> None:
+        self.assertEqual(lib._parse_json("", "things").unwrap(), [])
+
+    def test_non_list_document_is_err(self) -> None:
+        self.assertTrue(lib._parse_json('{"a": 1}', "things").is_err)
+
+    def test_garbage_is_err(self) -> None:
+        self.assertTrue(lib._parse_json('[1] not json', "things").is_err)
 
 
 class ParseIssuesJson(unittest.TestCase):

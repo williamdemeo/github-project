@@ -22,7 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from _utils.pipeline_types import (  # noqa: E402
     ErrorType,
+    FileMetadata,
     PipelineError,
+    ProcessedFile,
+    ProcessingStage,
     Result,
     collect_errors,
     sequence_results,
@@ -78,6 +81,29 @@ class MapDoesNotSwallowExceptions(unittest.TestCase):
     def test_and_then_chains(self) -> None:
         r = Result.ok(2).and_then(lambda x: Result.ok(x + 1))
         self.assertEqual(r.unwrap(), 3)
+
+
+class IsAgdaFile(unittest.TestCase):
+    """Path.suffix sees only `.md` for `Module.lagda.md`; the check must
+    match the filename so literate Markdown Agda sources count."""
+
+    def _pf(self, name: str) -> ProcessedFile:
+        meta = FileMetadata(
+            relative_path=Path(name), stage=ProcessingStage.SOURCE,
+            processing_time=0.0, file_size=0,
+        )
+        return ProcessedFile(
+            source_path=Path("src") / name, current_path=Path(name),
+            metadata=meta,
+        )
+
+    def test_all_supported_forms(self) -> None:
+        for name in ("Module.agda", "Module.lagda", "Module.lagda.md"):
+            self.assertTrue(self._pf(name).is_agda_file, name)
+
+    def test_non_agda_files(self) -> None:
+        for name in ("Module.md", "Module.py", "Module.lagda.rst"):
+            self.assertFalse(self._pf(name).is_agda_file, name)
 
 
 class TraversalsHandleOkNone(unittest.TestCase):

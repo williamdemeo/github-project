@@ -87,6 +87,18 @@ class ReferenceProblems(unittest.TestCase):
         )
         self.assertTrue(any("`nonexistent-label`" in e for e in errors(broken)))
 
+    def test_created_issues_may_carry_github_side_labels(self) -> None:
+        # An issue with a recorded (#N) already exists; its labels line
+        # is state rendered back by update and may carry labels added on
+        # GitHub (e.g. `wontfix`) — that must not block populate.
+        updated = PLAN.replace(
+            "### Issue M1-2: [M1-2] Write the docs (#42)\n\n"
+            "**Labels:** `milestone-1-core`, `documentation`",
+            "### Issue M1-2: [M1-2] Write the docs (#42)\n\n"
+            "**Labels:** `milestone-1-core`, `documentation`, `wontfix`",
+        )
+        self.assertEqual(errors(updated), [])
+
 
 class LabelSectionProblems(unittest.TestCase):
     def test_malformed_entry(self) -> None:
@@ -136,6 +148,24 @@ class StructuralAmbiguities(unittest.TestCase):
             "### Issue M1-X: Set up the build",
         )
         self.assertTrue(any("malformed issue heading" in e for e in errors(broken)))
+
+    def test_malformed_milestone_heading_is_error(self) -> None:
+        # A hyphen instead of the em-dash parses to nothing; without
+        # this check the plan would populate with no milestones at all.
+        broken = PLAN.replace("### Milestone 1 — Core", "### Milestone 1 - Core")
+        self.assertTrue(any("malformed milestone heading" in e
+                            for e in errors(broken)))
+
+    def test_milestone_checks_fire_even_when_no_heading_parses(self) -> None:
+        # The consistency checks guard on the SECTION's presence: a
+        # Milestones section whose every heading is malformed must not
+        # disable them.
+        broken = (PLAN
+                  .replace("### Milestone 1 — Core", "### Milestone 1 - Core")
+                  .replace("### Milestone 2 — Polish", "### Milestone 2 - Polish"))
+        errs = errors(broken)
+        self.assertTrue(any("refers to milestone" in e for e in errs))
+        self.assertTrue(any("region 'milestone-1'" in e for e in errs))
 
     def test_backtickless_label_bullet_is_error(self) -> None:
         broken = PLAN.replace(

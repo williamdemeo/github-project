@@ -106,6 +106,18 @@ def issue_sort_key(issue: Issue) -> tuple[int, int, str]:
 
 _ID_PREFIX_RE = re.compile(r"^\[M\d+-\d+[a-z]?\]\s+(.+)$")
 
+# A live GitHub body may contain anything — including text shaped like
+# this file's own region markers.  Rendered verbatim, such a line would
+# close (or open) a region on the next parse and corrupt the file, so
+# the comment-opening form is defanged before insertion.  The escape is
+# deterministic, keeping `--check` stable across repeated renders.
+_MARKER_IN_BODY_RE = re.compile(r"<!--(\s*)(BEGIN|END) GENERATED:")
+
+
+def neutralize_markers(body: str) -> str:
+    """Defang region-marker look-alikes inside a live issue body."""
+    return _MARKER_IN_BODY_RE.sub(r"<!--\1\2 GENERATED (escaped):", body)
+
 
 def strip_id_prefix(title: str) -> str:
     """Drop the leading `[MN-k]` from an issue title; the heading reproduces
@@ -120,16 +132,20 @@ def render_issue(issue: Issue) -> str:
     ref = f"#{issue.gh_number}{state_suffix}" if issue.gh_number else "(no number)"
     labels = ", ".join(f"`{lbl}`" for lbl in issue.labels)
     # Assignees are GitHub-owned state (like open/closed); render them so
-    # the file answers "who is on this?" without a browser.
+    # the file answers "who is on this?" without a browser.  Both
+    # metadata lines use the canonical `**Word:**` spelling that the
+    # plan parser recognizes (and strips from bodies), so a rendered
+    # block can be copied as the starting point for a new issue.
     assignees = (
-        f"**Assignees**: {', '.join('@' + a for a in issue.assignees)}\n\n"
+        f"**Assignees:** {', '.join('@' + a for a in issue.assignees)}\n\n"
         if issue.assignees else ""
     )
     body = issue.body.strip() if issue.body else "_(no description on GitHub)_"
+    body = neutralize_markers(body)
     return (
         f"### Issue {issue.id}: {title} ({ref})\n"
         f"\n"
-        f"**Labels**: {labels}\n"
+        f"**Labels:** {labels}\n"
         f"\n"
         f"{assignees}"
         f"{body}\n"

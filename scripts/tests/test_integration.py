@@ -192,16 +192,46 @@ class TitleEditResilience(FakeGhHarness):
 
 
 class MilestoneAvailability(FakeGhHarness):
+    def seed_labels(self) -> None:
+        # Labels exist; only milestones are missing, so the tests below
+        # pin the milestone-specific block (with everything missing, the
+        # label check fires first and masks it).
+        (self.state / "labels.json").write_text(json.dumps([
+            {"name": n, "color": "cccccc", "description": ""}
+            for n in ("milestone-1-core", "milestone-2-polish",
+                      "documentation", "good first issue")
+        ]))
+
     def test_issues_only_without_milestones_fails_and_creates_nothing(self) -> None:
         # --issues-only documents that milestones must already exist.
         # On a repo with none, every issue whose plan-declared milestone
         # is missing is skipped and counted as a failure — creating it
         # milestone-less would leave GitHub state permanently incomplete
         # (populate never revisits existing issues).
+        self.seed_labels()
         proc = self.populate("--issues-only")
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         self.assertEqual(self.issues_on_fake_github(), [])
         self.assertIn("not available on GitHub", proc.stdout)
+
+    def test_dry_run_predicts_the_same_blocks(self) -> None:
+        # The dry run must report — and exit with — exactly what the
+        # real run would do, including live-availability blocks.
+        self.seed_labels()
+        proc = self.populate("--issues-only", "--dry-run")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("! blocked:", proc.stdout)
+        self.assertIn("not available on GitHub", proc.stdout)
+        self.assertNotIn("+ create issue:", proc.stdout)
+
+
+class StageFlagConflicts(FakeGhHarness):
+    def test_two_only_flags_are_rejected(self) -> None:
+        # Any pair of --*-only flags deselects every stage; argparse now
+        # rejects the combination outright instead of silently no-oping.
+        proc = self.populate("--labels-only", "--milestones-only")
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn("not allowed with", proc.stderr)
 
 
 class WriteBackAbort(FakeGhHarness):

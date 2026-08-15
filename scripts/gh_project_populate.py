@@ -117,11 +117,55 @@ def print_milestone_plan(plan: MilestonePlan) -> None:
         print(f"  - exists: milestone #{ms.gh_number} {ms.title}")
 
 
-def print_issue_plan(plan: IssuePlan) -> None:
+def issue_blocker(
+    issue,
+    available_milestones: set[int],
+    declared_milestones: set[int],
+    available_labels: set[str],
+) -> str | None:
+    """Why this issue cannot be created, or None if it can.
+
+    Shared by the dry-run report and the live execution loop, so the
+    dry run prints — and exits with — exactly what a real run would do.
+    """
+    missing = [
+        lbl for lbl in issue.labels if lbl.casefold() not in available_labels
+    ]
+    if missing:
+        return (
+            f"references unavailable label(s) "
+            f"{', '.join(f'`{m}`' for m in missing)} "
+            f"(not on GitHub and not created this run)"
+        )
+    if (issue.milestone_idx not in available_milestones
+            and issue.milestone_idx in declared_milestones):
+        return (
+            f"milestone {issue.milestone_idx} is declared in the plan but "
+            f"not available on GitHub (create milestones first, then re-run)"
+        )
+    return None
+
+
+def print_issue_plan(
+    plan: IssuePlan,
+    available_milestones: set[int],
+    declared_milestones: set[int],
+    available_labels: set[str],
+) -> int:
+    """Print the issue plan; returns the number of blocked issues."""
+    blocked = 0
     for issue in plan.to_create:
-        print(f"  + create issue: {issue.title}")
+        reason = issue_blocker(
+            issue, available_milestones, declared_milestones, available_labels
+        )
+        if reason is None:
+            print(f"  + create issue: {issue.title}")
+        else:
+            blocked += 1
+            print(f"  ! blocked: issue {issue.id} — {reason}")
     for _, live in plan.existing:
         print(f"  - exists: issue #{live.gh_number} {live.title}")
+    return blocked
 
 
 def _stage_header(title: str) -> None:
@@ -176,16 +220,19 @@ def execute_issues(
     md_path: Path,
     text: str,
     delay: float,
-) -> tuple[str, int]:
+) -> tuple[str, int, int]:
     """Create the planned issues with immediate number write-back.
 
-    Returns (current file text, failures).  The plan file is persisted
-    after EACH creation, before the next remote mutation — that is the
-    crash-safety contract, so a write-back that cannot be persisted
-    ABORTS the run (counted as a failure) rather than continuing to
-    mutate GitHub while numbers silently stop landing on disk.  Nothing
-    is lost by aborting: created issues are matched by the snapshot on
-    the next run.
+    Returns (current file text, created, failures).  The counts are
+    explicit so the caller's summary stays honest when the loop aborts
+    early — `planned - failed` is NOT the number created in that case.
+
+    The plan file is persisted after EACH creation, before the next
+    remote mutation — that is the crash-safety contract, so a write-back
+    that cannot be persisted ABORTS the run (counted as a failure)
+    rather than continuing to mutate GitHub while numbers silently stop
+    landing on disk.  Nothing is lost by aborting: created issues are
+    matched by the snapshot on the next run.
 
     An issue whose plan-declared milestone is unavailable (creation
     failed, or --issues-only before milestones exist) is skipped and
@@ -194,38 +241,24 @@ def execute_issues(
     issues.  Issues referencing a milestone the plan never declared are
     created without one (a plan with no Milestones section is legal).
     """
+    created = 0
     failed = 0
-    for position, issue in enumerate(plan.to_create):
-        missing = [
-            lbl for lbl in issue.labels
-            if lbl.casefold() not in available_labels
-        ]
-        if missing:
+    for issue in plan.to_create:
+        reason = issue_blocker(
+            issue, set(ms_title_map), declared_milestones, available_labels
+        )
+        if reason is not None:
             failed += 1
-            print(
-                f"  ! issue {issue.id}: skipped — references unavailable "
-                f"label(s) {', '.join(f'`{m}`' for m in missing)} "
-                f"(not on GitHub and not created this run)"
-            )
+            print(f"  ! issue {issue.id}: skipped — {reason}")
             continue
 
         ms_title = ms_title_map.get(issue.milestone_idx)
-        if ms_title is None:
-            if issue.milestone_idx in declared_milestones:
-                failed += 1
-                print(
-                    f"  ! issue {issue.id}: skipped — milestone "
-                    f"{issue.milestone_idx} is declared in the plan but "
-                    f"not available on GitHub (create milestones first, "
-                    f"then re-run)"
-                )
-                continue
-            if issue.milestone_idx != 0:
-                print(
-                    f"  ~ issue {issue.id}: milestone {issue.milestone_idx} "
-                    f"is not declared in the plan; creating without a "
-                    f"milestone"
-                )
+        if ms_title is None and issue.milestone_idx != 0:
+            print(
+                f"  ~ issue {issue.id}: milestone {issue.milestone_idx} "
+                f"is not declared in the plan; creating without a "
+                f"milestone"
+            )
 
         result = client.create_issue(issue, milestone_title=ms_title)
         if result.is_err:
@@ -235,6 +268,7 @@ def execute_issues(
             continue
 
         gh_number = result.unwrap()
+        created += 1
         print(f"  created issue #{gh_number}: {issue.title}")
 
         new_text, found = record_issue_number(text, issue.id, gh_number)
@@ -244,7 +278,7 @@ def execute_issues(
                 f"heading for {issue.id} not found"
                 if not found else str(write_result.unwrap_err())
             )
-            remaining = len(plan.to_create) - position - 1
+            remaining = len(plan.to_create) - created - failed
             failed += 1
             print(
                 f"  ! could not persist #{gh_number} for {issue.id} "
@@ -254,10 +288,10 @@ def execute_issues(
                 f"re-run — the snapshot match makes the rerun safe.",
                 file=sys.stderr,
             )
-            return text, failed
+            return text, created, failed
         text = new_text
         time.sleep(delay)
-    return text, failed
+    return text, created, failed
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -282,9 +316,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("markdown", type=Path, help="Path to the project plan markdown file")
     parser.add_argument("--repo", help="GitHub repo (owner/name); overrides the file header")
     parser.add_argument("--dry-run", action="store_true", help="Print the plan without executing")
-    parser.add_argument("--milestones-only", action="store_true")
-    parser.add_argument("--labels-only", action="store_true")
-    parser.add_argument("--issues-only", action="store_true")
+    # Mutually exclusive: any pair of these would deselect every stage
+    # and silently do nothing.
+    stage = parser.add_mutually_exclusive_group()
+    stage.add_argument("--milestones-only", action="store_true")
+    stage.add_argument("--labels-only", action="store_true")
+    stage.add_argument("--issues-only", action="store_true")
     parser.add_argument("--skip-labels", action="store_true")
     parser.add_argument("--start-from", type=str, default=None,
                         help="Create only issues with ID >= this (e.g. M1-3)")
@@ -362,6 +399,21 @@ def main() -> int:
     milestone_plan = plan_milestones(plan.milestones, snapshot.milestones)
     issue_plan = plan_issues(desired_issues, snapshot.issues)
 
+    # Availability as it WILL stand when the issues stage runs, given
+    # the selected stages: entities already on GitHub, plus those this
+    # run will create first.  Feeding these to the shared issue_blocker
+    # makes the printed plan — and the dry-run exit code — match what
+    # execution would actually do (e.g. `--dry-run --issues-only` on a
+    # repo with no milestones reports the blocks a real run would hit).
+    declared_milestones = {m.number for m in plan.milestones}
+    prospective_milestones = {m.number for m in milestone_plan.existing}
+    if do_milestones:
+        prospective_milestones |= {m.number for m in milestone_plan.to_create}
+    prospective_labels = {lbl.name.casefold() for lbl in snapshot.labels}
+    if do_labels:
+        prospective_labels |= {lbl.name.casefold() for lbl in label_plan.to_create}
+
+    blocked = 0
     if do_labels:
         _stage_header("LABELS")
         print_label_plan(label_plan)
@@ -372,14 +424,17 @@ def main() -> int:
         print()
     if do_issues:
         _stage_header("ISSUES")
-        print_issue_plan(issue_plan)
+        blocked = print_issue_plan(
+            issue_plan, prospective_milestones, declared_milestones,
+            prospective_labels,
+        )
         print()
 
     collisions = len(label_plan.collisions) if do_labels else 0
 
     if args.dry_run:
         print("Dry run — nothing was created.")
-        return 1 if collisions else 0
+        return 1 if collisions or blocked else 0
 
     # ── Confirm ──────────────────────────────────────────────────────────
     to_do = []
@@ -422,20 +477,24 @@ def main() -> int:
 
     if do_issues:
         _stage_header("CREATING ISSUES")
-        available = (
-            {lbl.name.casefold() for lbl in snapshot.labels}
-            | {lbl.name.casefold() for lbl in label_plan.to_create}
-        )
-        _text, issue_failed = execute_issues(
+        # Labels planned for creation are available only if the labels
+        # stage actually ran this invocation.
+        available = {lbl.name.casefold() for lbl in snapshot.labels}
+        if do_labels:
+            available |= {lbl.name.casefold() for lbl in label_plan.to_create}
+        _text, issues_created, issue_failed = execute_issues(
             client, issue_plan, ms_title_map,
-            {m.number for m in plan.milestones}, available,
+            declared_milestones, available,
             args.markdown, text, args.delay,
         )
         failures += issue_failed
+        not_attempted = len(issue_plan.to_create) - issues_created - issue_failed
         print()
         _stage_header(
-            f"DONE: {len(issue_plan.to_create) - issue_failed} issues created, "
-            f"{len(issue_plan.existing)} already existed, {issue_failed} failed"
+            f"DONE: {issues_created} issues created, "
+            f"{len(issue_plan.existing)} already existed, "
+            f"{issue_failed} failed or skipped, "
+            f"{not_attempted} not attempted"
         )
 
     if collisions:

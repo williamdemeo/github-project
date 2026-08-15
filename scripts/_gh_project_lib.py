@@ -170,12 +170,18 @@ ISSUE_HEADING_RE = re.compile(r"^### Issue (M\d+-\d+[a-z]?): (.+?)[ \t]*$", re.M
 # back by populate, or `(#123, closed)` as rendered by update.
 HEADING_NUMBER_SUFFIX_RE = re.compile(r"\s*\(#(\d+)(?:,\s*[a-z]+)?\)$")
 
-# An issue body ends at the next issue heading, the next top-level `## `
-# section, or an END GENERATED marker — whichever comes first.  (The
-# ancestor scripts stopped only at `## Summary:` and at leaked
-# `## Milestone N` headers, which swept trailing prose into the final
-# issue's body.)
-BODY_END_RE = re.compile(r"^(?:## (?!#)|<!--\s*END GENERATED)", re.MULTILINE)
+# An issue body ends at the next issue heading, a generated-region
+# marker, or one of the two structural `## ` headers known to sit
+# between issue groups (`## Milestone N`, `## Summary`) — whichever
+# comes first.  Deliberately NOT any `## ` heading: real plans put
+# `## Description` / `## Tasks` / `## Acceptance criteria` sections
+# INSIDE issue bodies, and bounding on generic headings would truncate
+# them.  The two named headers are what the ancestor scripts special-
+# cased for the same reason.
+BODY_END_RE = re.compile(
+    r"^(?:<!--\s*(?:BEGIN|END) GENERATED|## Milestone \d+\b|## Summary\b)",
+    re.MULTILINE,
+)
 
 # Region markers sit between issue headings in the plan file, so the
 # span-based body extraction would sweep the closing marker of each
@@ -347,11 +353,14 @@ def _parse_issues(text: str) -> list[Issue]:
             label_str = labels_match.group(1).strip()
             labels = [lbl.strip().strip("`") for lbl in label_str.split(",")]
 
-        # Build the issue body: drop the Labels and Milestone metadata lines.
+        # Build the issue body: drop the metadata lines.  Assignees is
+        # GitHub-owned state rendered by update; if a new issue was
+        # authored by copying a rendered block, that line is not content.
         body_lines = [
             line for line in raw_body.split("\n")
             if not line.strip().startswith("**Labels:**")
             and not line.strip().startswith("**Milestone:**")
+            and not line.strip().startswith("**Assignees:**")
         ]
         body = "\n".join(body_lines).strip()
         body = re.sub(r"^\n+", "", body)
@@ -450,19 +459,19 @@ def parse_file(content: str) -> Result[ParsedFile, PipelineError]:
     pos = 0
     while True:
         begin = BEGIN_RE.search(content, pos)
+        # A stray END — whether before the next BEGIN or after the last
+        # one — would otherwise vanish silently into a manual segment.
+        stray = END_RE.search(content, pos)
+        if stray is not None and (begin is None or stray.start() < begin.start()):
+            return Result.err(PipelineError(
+                error_type=ErrorType.PARSING_ERROR,
+                message=(
+                    f"<!-- END GENERATED: {stray.group(1)} --> "
+                    f"has no matching BEGIN"
+                ),
+                context={"offset": stray.start()},
+            ))
         if begin is None:
-            # A stray END with no matching BEGIN would otherwise vanish
-            # silently into a manual segment.
-            stray = END_RE.search(content, pos)
-            if stray is not None:
-                return Result.err(PipelineError(
-                    error_type=ErrorType.PARSING_ERROR,
-                    message=(
-                        f"<!-- END GENERATED: {stray.group(1)} --> "
-                        f"has no matching BEGIN"
-                    ),
-                    context={"offset": stray.start()},
-                ))
             manuals.append(content[pos:])
             return Result.ok(ParsedFile(tuple(manuals), tuple(ids)))
         marker_id = begin.group(1)
@@ -696,13 +705,31 @@ def lint_plan(text: str) -> tuple[Problem, ...]:
                 _line_of(text, m.start()),
             ))
 
+    # Same hazard one level up: `### Milestone 1 - Core` (hyphen, not
+    # em-dash) silently parses to nothing, which would otherwise also
+    # disable every milestone-consistency check below.  Only NUMBERED
+    # headings are scanned — prose headings like `### Milestone
+    # dependencies` are legitimate (the exemplar plans use them).
+    milestone_heading_re = re.compile(r"^### Milestone (\d+) — (.+)$")
+    for m in re.finditer(r"^### Milestone\s+\d+\b[^\n]*$", text, re.MULTILINE):
+        if not milestone_heading_re.match(m.group(0)):
+            problems.append(Problem(
+                "error",
+                f"malformed milestone heading {m.group(0)!r} — expected "
+                f"`### Milestone N — Title` (em-dash)",
+                _line_of(text, m.start()),
+            ))
+
     issue_ids = [i.id for i in plan.issues]
     for dup in sorted({i for i in issue_ids if issue_ids.count(i) > 1}):
         problems.append(Problem(
             "error", f"duplicate issue ID {dup} — populate would create "
                      f"one issue and orphan the other heading"))
 
-    if plan.milestones:
+    # Guard on the SECTION's presence, not on whether anything parsed
+    # from it: a Milestones section whose every heading is malformed
+    # must not silently disable these consistency checks.
+    if re.search(r"^## Milestones\s*$", text, re.MULTILINE):
         known = set(ms_numbers)
         for issue in plan.issues:
             if issue.milestone_idx not in known:
@@ -768,6 +795,11 @@ def _lint_labels(text: str, plan: ProjectPlan) -> list[Problem]:
     if explicit:
         known = {normalize_label_name(n) for n in names}
         for issue in plan.issues:
+            if issue.gh_number is not None:
+                # Already created: its labels line is state rendered
+                # back by update (and may legitimately carry labels
+                # added on GitHub), not creation input.
+                continue
             for lbl in issue.labels:
                 if normalize_label_name(lbl) not in known:
                     problems.append(Problem(
@@ -1017,22 +1049,40 @@ def _parse_issues_json(stdout: str) -> Result[list[Issue], PipelineError]:
 
 
 def _parse_json(stdout: str, kind: str) -> Result[list[dict], PipelineError]:
-    """Decode the JSON body of a `gh` invocation, with structured errors."""
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError as e:
-        return Result.err(PipelineError(
-            error_type=ErrorType.PARSING_ERROR,
-            message=f"failed to decode {kind} JSON from `gh`",
-            cause=e,
-            context={"stdout_preview": stdout[:500]},
-        ))
-    if not isinstance(data, list):
-        return Result.err(PipelineError(
-            error_type=ErrorType.PARSING_ERROR,
-            message=f"expected a JSON list of {kind}, got {type(data).__name__}",
-        ))
-    return Result.ok(data)
+    """Decode the JSON body of a `gh` invocation, with structured errors.
+
+    `gh api --paginate` concatenates each page as a separate JSON
+    document (`[...][...]`), so this decodes document-by-document with
+    raw_decode and concatenates the lists — a single json.loads would
+    fail with "Extra data" on the 101st item.  (gh's own --slurp flag
+    would do this server-side, but it requires gh >= 2.47; decoding here
+    keeps the documented floor at "any gh".)
+    """
+    decoder = json.JSONDecoder()
+    items: list[dict] = []
+    pos = 0
+    end = len(stdout)
+    while True:
+        while pos < end and stdout[pos].isspace():
+            pos += 1
+        if pos >= end:
+            break
+        try:
+            data, pos = decoder.raw_decode(stdout, pos)
+        except json.JSONDecodeError as e:
+            return Result.err(PipelineError(
+                error_type=ErrorType.PARSING_ERROR,
+                message=f"failed to decode {kind} JSON from `gh`",
+                cause=e,
+                context={"stdout_preview": stdout[:500]},
+            ))
+        if not isinstance(data, list):
+            return Result.err(PipelineError(
+                error_type=ErrorType.PARSING_ERROR,
+                message=f"expected a JSON list of {kind}, got {type(data).__name__}",
+            ))
+        items.extend(data)
+    return Result.ok(items)
 
 
 def _parse_milestone_create_response(stdout: str) -> Result[int, PipelineError]:
