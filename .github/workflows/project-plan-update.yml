@@ -1,0 +1,45 @@
+name: project-plan-update
+
+# Keeps docs/GITHUB_PROJECT.md fresh.  By default this only REPORTS
+# drift to the run's step summary — no bot commits.  Opt in to automatic
+# updates by setting the repository variable PROJECT_PLAN_AUTO_UPDATE to
+# `pr` (open/refresh a pull request) or `commit` (push directly); see
+# scripts/ci/project-plan-update.sh, which holds all of the logic and is
+# runnable and testable locally.  Delete this file (or disable the
+# workflow in the Actions tab) if you want no scheduled runs at all.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays, 06:00 UTC
+  workflow_dispatch:
+
+# contents:write and pull-requests:write are exercised only when the
+# PROJECT_PLAN_AUTO_UPDATE variable arms the commit/pr modes; the
+# default report-only path reads issues and writes nothing.
+permissions:
+  contents: write
+  issues: read
+  pull-requests: write
+
+jobs:
+  freshness:
+    name: Is the plan current?
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check, and update if armed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROJECT_PLAN_AUTO_UPDATE: ${{ vars.PROJECT_PLAN_AUTO_UPDATE }}
+          # Required here.  The update script strips GH_TOKEN and
+          # GITHUB_TOKEN by default, which is exactly how Actions
+          # authenticates; without this every gh call exits with a
+          # message pointing at `gh auth login`, i.e. away from the
+          # real cause.
+          NO_ENV_PREFIX: "1"
+        run: scripts/ci/project-plan-update.sh

@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""
+File: scripts/tests/fake_gh/gh
+
+Description:
+  A recorded-transcript stand-in for the GitHub CLI, used by the
+  integration tests.  Prepend this directory to PATH and the scripts
+  under test exercise their real command-construction and JSON-parsing
+  paths with zero network.
+
+  State lives under $FAKE_GH_STATE:
+    labels.json / milestones.json / issues.json   the fake repository
+    calls.log                                     one line per invocation
+    fail_create_issue_at                          (optional) 1-based index
+                                                  of an issue-create call
+                                                  that must fail, for
+                                                  crash-safety tests
+
+  Only the invocations the gh_project scripts actually make are
+  implemented; anything else exits 64 loudly so a drifting client
+  surfaces as a test failure, not a silent success.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+STATE = Path(os.environ["FAKE_GH_STATE"])
+
+
+def load(name: str, default):
+    path = STATE / name
+    return json.loads(path.read_text()) if path.exists() else default
+
+
+def save(name: str, data) -> None:
+    (STATE / name).write_text(json.dumps(data, indent=1))
+
+
+def bump(name: str) -> int:
+    path = STATE / name
+    n = int(path.read_text()) + 1 if path.exists() else 1
+    path.write_text(str(n))
+    return n
+
+
+def flag_value(args: list[str], flag: str) -> str | None:
+    return args[args.index(flag) + 1] if flag in args else None
+
+
+def flag_values(args: list[str], flag: str) -> list[str]:
+    return [args[i + 1] for i, a in enumerate(args) if a == flag]
+
+
+def kv_values(args: list[str], flag: str) -> dict[str, str]:
+    """Collect `-f key=value` / `-F key=value` style pairs."""
+    out: dict[str, str] = {}
+    for raw in flag_values(args, flag):
+        key, _, value = raw.partition("=")
+        out[key] = value
+    return out
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    with (STATE / "calls.log").open("a") as log:
+        log.write(" ".join(args) + "\n")
+
+    if args[0] == "api" and args[1].endswith("/labels"):
+        print(json.dumps(load("labels.json", [])))
+        return 0
+
+    if args[:2] == ["label", "create"]:
+        labels = load("labels.json", [])
+        labels.append({
+            "name": args[2],
+            "color": flag_value(args, "--color") or "cccccc",
+            "description": flag_value(args, "--description") or "",
+        })
+        save("labels.json", labels)
+        return 0
+
+    if args[0] == "api" and "milestones" in args[1]:
+        if "POST" in flag_values(args, "-X"):
+            fields = kv_values(args, "-f")
+            milestones = load("milestones.json", [])
+            number = bump("next_milestone")
+            milestones.append({
+                "title": fields.get("title", ""),
+                "description": fields.get("description", ""),
+                "number": number,
+                "state": "open",
+            })
+            save("milestones.json", milestones)
+            print(json.dumps({"number": number}))
+            return 0
+        print(json.dumps(load("milestones.json", [])))
+        return 0
+
+    if args[0] == "api" and args[1].endswith("/issues"):
+        print(json.dumps(load("issues.json", [])))
+        return 0
+
+    if args[:2] == ["issue", "create"]:
+        call_index = bump("issue_create_calls")
+        fail_at = STATE / "fail_create_issue_at"
+        if fail_at.exists() and call_index == int(fail_at.read_text()):
+            print("fake gh: injected failure", file=sys.stderr)
+            return 1
+        repo = flag_value(args, "--repo") or "octocat/demo"
+        issues = load("issues.json", [])
+        number = bump("next_issue")
+        milestone_title = flag_value(args, "--milestone")
+        issues.append({
+            "number": number,
+            "title": flag_value(args, "--title") or "",
+            "body": flag_value(args, "--body") or "",
+            "labels": [{"name": n} for n in flag_values(args, "--label")],
+            "milestone": {"title": milestone_title} if milestone_title else None,
+            "state": "OPEN",
+            "assignees": [],
+        })
+        save("issues.json", issues)
+        print(f"https://github.com/{repo}/issues/{number}")
+        return 0
+
+    print(f"fake gh: unimplemented invocation: {' '.join(args)}", file=sys.stderr)
+    return 64
+
+
+if __name__ == "__main__":
+    sys.exit(main())
