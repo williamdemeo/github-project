@@ -102,6 +102,34 @@ def issue_sort_key(issue: Issue) -> tuple[int, int, str]:
     return (int(m.group(1)), int(m.group(2)), m.group(3) or "") if m else (10**9, 10**9, "")
 
 
+def group_unplanned(
+    issues: list[Issue],
+) -> tuple[tuple[str | None, tuple[Issue, ...]], ...]:
+    """Group organically-filed issues (id="") for the `unplanned` region.
+
+    Grouped by the GitHub milestone title verbatim (organic issues have
+    no plan index to key on); groups ordered by title with the
+    no-milestone group last, issues within a group by ascending number.
+    Everything is deterministic, so repeated renders are `--check`
+    stable.
+    """
+    by_title: dict[str | None, list[Issue]] = {}
+    for issue in issues:
+        if issue.id:
+            continue
+        by_title.setdefault(issue.milestone_title, []).append(issue)
+    ordered_titles = sorted(
+        by_title, key=lambda t: (t is None, t or "")
+    )
+    return tuple(
+        (
+            title,
+            tuple(sorted(by_title[title], key=lambda i: i.gh_number or 0)),
+        )
+        for title in ordered_titles
+    )
+
+
 # ── Region rendering ─────────────────────────────────────────────────────────
 
 _ID_PREFIX_RE = re.compile(r"^\[M\d+-\d+[a-z]?\]\s+(.+)$")
@@ -127,7 +155,9 @@ def strip_id_prefix(title: str) -> str:
 
 
 def render_issue(issue: Issue) -> str:
-    title = strip_id_prefix(issue.title)
+    # Titles are dynamic GitHub content too: defang marker look-alikes
+    # exactly as in bodies.
+    title = neutralize_markers(strip_id_prefix(issue.title))
     state_suffix = ", closed" if issue.state == "closed" else ""
     ref = f"#{issue.gh_number}{state_suffix}" if issue.gh_number else "(no number)"
     labels = ", ".join(f"`{lbl}`" for lbl in issue.labels)
@@ -152,7 +182,56 @@ def render_issue(issue: Issue) -> str:
     )
 
 
-def render_region(region_id: str, issues_by_ms: dict[int, list[Issue]]) -> str:
+def render_unplanned_issue(issue: Issue) -> str:
+    """The planning block shape, minus the id — organic issues have none.
+
+    The `[MN-k]` prefix stays the stable-identifier contract of the
+    milestone regions; here the GitHub number is the only handle, so it
+    alone appears in the heading.
+    """
+    state_suffix = ", closed" if issue.state == "closed" else ""
+    ref = f"#{issue.gh_number}{state_suffix}" if issue.gh_number else "(no number)"
+    labels = ", ".join(f"`{lbl}`" for lbl in issue.labels)
+    assignees = (
+        f"**Assignees:** {', '.join('@' + a for a in issue.assignees)}\n\n"
+        if issue.assignees else ""
+    )
+    body = issue.body.strip() if issue.body else "_(no description on GitHub)_"
+    body = neutralize_markers(body)
+    title = neutralize_markers(issue.title)
+    return (
+        f"### {title} ({ref})\n"
+        f"\n"
+        f"**Labels:** {labels}\n"
+        f"\n"
+        f"{assignees}"
+        f"{body}\n"
+    )
+
+
+def render_unplanned_region(
+    unplanned: tuple[tuple[str | None, tuple[Issue, ...]], ...],
+) -> str:
+    if not unplanned:
+        return (
+            "\n_(no organically-filed issues — every issue on GitHub "
+            "carries a `[MN-k]` planning prefix)_\n"
+        )
+    parts: list[str] = []
+    for title, issues in unplanned:
+        header = title if title is not None else "(no milestone)"
+        blocks = "\n---\n\n".join(render_unplanned_issue(i) for i in issues)
+        parts.append(f"#### {header}\n\n{blocks}")
+    return "\n" + "\n\n".join(parts) + "\n"
+
+
+def render_region(
+    region_id: str,
+    issues_by_ms: dict[int, list[Issue]],
+    unplanned: tuple[tuple[str | None, tuple[Issue, ...]], ...],
+) -> str:
+    if region_id == "unplanned":
+        return render_unplanned_region(unplanned)
     m = re.match(r"^milestone-(\d+)$", region_id)
     if m is None:
         return f"\n<!-- region '{region_id}' has no rendering rule in gh_project_update.py -->\n"
@@ -164,13 +243,17 @@ def render_region(region_id: str, issues_by_ms: dict[int, list[Issue]]) -> str:
     return "\n" + "\n---\n\n".join(blocks) + "\n"
 
 
-def assemble_file(parsed: ParsedFile, issues_by_ms: dict[int, list[Issue]]) -> str:
+def assemble_file(
+    parsed: ParsedFile,
+    issues_by_ms: dict[int, list[Issue]],
+    unplanned: tuple[tuple[str | None, tuple[Issue, ...]], ...] = (),
+) -> str:
     parts: list[str] = []
     for i, manual in enumerate(parsed.manuals[:-1]):
         rid = parsed.ids[i]
         parts.append(manual)
         parts.append(f"<!-- BEGIN GENERATED: {rid} -->\n")
-        parts.append(render_region(rid, issues_by_ms))
+        parts.append(render_region(rid, issues_by_ms, unplanned))
         parts.append(f"<!-- END GENERATED: {rid} -->")
     parts.append(parsed.manuals[-1])
     return "".join(parts)
@@ -196,12 +279,31 @@ def warn_orphan_milestones(parsed: ParsedFile, issues_by_ms: dict[int, list[Issu
             )
 
 
+def warn_unrendered_unplanned(
+    parsed: ParsedFile,
+    unplanned: tuple[tuple[str | None, tuple[Issue, ...]], ...],
+) -> None:
+    """Stderr-warn when organically-filed issues exist but the file has
+    no `unplanned` region to show them in — the invisibility this
+    region exists to end (issue #3)."""
+    if not unplanned or "unplanned" in parsed.ids:
+        return
+    count = sum(len(issues) for _, issues in unplanned)
+    print(
+        f"warning: {count} organically-filed issue(s) (no [MN-k] prefix) "
+        f"have no <!-- BEGIN GENERATED: unplanned --> region",
+        file=sys.stderr,
+    )
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def _render(parsed: ParsedFile, issues: list[Issue]) -> str:
     issues_by_ms = group_by_milestone(issues)
+    unplanned = group_unplanned(issues)
     warn_orphan_milestones(parsed, issues_by_ms)
-    return assemble_file(parsed, issues_by_ms)
+    warn_unrendered_unplanned(parsed, unplanned)
+    return assemble_file(parsed, issues_by_ms, unplanned)
 
 
 def run(markdown: Path, repo: str | None, env_prefix: bool) -> Result[str, PipelineError]:

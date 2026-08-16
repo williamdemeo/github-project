@@ -121,6 +121,13 @@ Body of M2-1a.
 
 <!-- END GENERATED: milestone-2 -->
 
+## Unplanned work
+
+<!-- BEGIN GENERATED: unplanned -->
+
+_(no organically-filed issues — every issue on GitHub carries a `[MN-k]` planning prefix)_
+<!-- END GENERATED: unplanned -->
+
 ## How to use
 
 Trailing prose that must not leak into any issue body.
@@ -251,6 +258,40 @@ class ParsePlan(unittest.TestCase):
         )
 
 
+class UnplannedMasking(unittest.TestCase):
+    """The unplanned region mirrors GitHub content; nothing inside it
+    may be read back as plan structure."""
+
+    MIRRORED = PLAN.replace(
+        "_(no organically-filed issues — every issue on GitHub carries "
+        "a `[MN-k]` planning prefix)_",
+        "#### 1. Core\n\n"
+        "### Issue M9-9: phantom planning heading (#77)\n\n"
+        "**Labels:** `not-a-plan-label`\n\n"
+        "Organic body.\n",
+    )
+
+    def test_mask_preserves_markers_and_offsets(self) -> None:
+        masked = lib.mask_unplanned_regions(self.MIRRORED)
+        self.assertEqual(len(masked), len(self.MIRRORED))
+        self.assertEqual(masked.count("\n"), self.MIRRORED.count("\n"))
+        self.assertIn("<!-- BEGIN GENERATED: unplanned -->", masked)
+        self.assertIn("<!-- END GENERATED: unplanned -->", masked)
+        self.assertNotIn("phantom planning heading", masked)
+
+    def test_no_phantom_plan_issue(self) -> None:
+        plan = parse_project_plan(self.MIRRORED)
+        self.assertEqual(
+            {i.id for i in plan.issues}, {"M1-1", "M1-2", "M2-1", "M2-1a"}
+        )
+
+    def test_milestone_regions_still_parse(self) -> None:
+        # Masking is surgical: planned regions keep their content.
+        plan = parse_project_plan(self.MIRRORED)
+        m11 = next(i for i in plan.issues if i.id == "M1-1")
+        self.assertIn("Body of M1-1.", m11.body)
+
+
 class RecordIssueNumber(unittest.TestCase):
     def test_adds_suffix(self) -> None:
         text, found = record_issue_number(PLAN, "M1-1", 7)
@@ -290,8 +331,8 @@ class RecordIssueNumber(unittest.TestCase):
 class ParseFileRegions(unittest.TestCase):
     def test_round_trip_structure(self) -> None:
         parsed = parse_file(PLAN).unwrap()
-        self.assertEqual(parsed.ids, ("milestone-1", "milestone-2"))
-        self.assertEqual(len(parsed.manuals), 3)
+        self.assertEqual(parsed.ids, ("milestone-1", "milestone-2", "unplanned"))
+        self.assertEqual(len(parsed.manuals), 4)
         self.assertTrue(parsed.manuals[-1].startswith("\n\n## How to use"))
 
     def test_unterminated_begin(self) -> None:
