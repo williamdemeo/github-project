@@ -155,12 +155,14 @@ def strip_id_prefix(title: str) -> str:
 
 
 def render_issue(issue: Issue) -> str:
-    # Titles are dynamic GitHub content too: defang marker look-alikes
-    # exactly as in bodies.
+    # Titles and label names are dynamic GitHub content too: defang
+    # marker look-alikes exactly as in bodies.  (GitHub label names
+    # allow arbitrary punctuation, and backticks are no protection —
+    # the marker regexes match raw text, not rendered markdown.)
     title = neutralize_markers(strip_id_prefix(issue.title))
     state_suffix = ", closed" if issue.state == "closed" else ""
     ref = f"#{issue.gh_number}{state_suffix}" if issue.gh_number else "(no number)"
-    labels = ", ".join(f"`{lbl}`" for lbl in issue.labels)
+    labels = neutralize_markers(", ".join(f"`{lbl}`" for lbl in issue.labels))
     # Assignees are GitHub-owned state (like open/closed); render them so
     # the file answers "who is on this?" without a browser.  Both
     # metadata lines use the canonical `**Word:**` spelling that the
@@ -191,7 +193,7 @@ def render_unplanned_issue(issue: Issue) -> str:
     """
     state_suffix = ", closed" if issue.state == "closed" else ""
     ref = f"#{issue.gh_number}{state_suffix}" if issue.gh_number else "(no number)"
-    labels = ", ".join(f"`{lbl}`" for lbl in issue.labels)
+    labels = neutralize_markers(", ".join(f"`{lbl}`" for lbl in issue.labels))
     assignees = (
         f"**Assignees:** {', '.join('@' + a for a in issue.assignees)}\n\n"
         if issue.assignees else ""
@@ -219,7 +221,11 @@ def render_unplanned_region(
         )
     parts: list[str] = []
     for title, issues in unplanned:
-        header = title if title is not None else "(no milestone)"
+        # Milestone titles are dynamic GitHub content rendered into the
+        # file: defang marker look-alikes like titles/bodies/labels.
+        header = (
+            neutralize_markers(title) if title is not None else "(no milestone)"
+        )
         blocks = "\n---\n\n".join(render_unplanned_issue(i) for i in issues)
         parts.append(f"#### {header}\n\n{blocks}")
     return "\n" + "\n\n".join(parts) + "\n"

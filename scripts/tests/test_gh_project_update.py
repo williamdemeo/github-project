@@ -185,6 +185,41 @@ class UnplannedRegion(unittest.TestCase):
         self.assertNotRegex(out, r"<!--\s*END GENERATED:")
         self.assertIn("END GENERATED (escaped):", out)
 
+    def test_marker_in_milestone_title_is_neutralized(self) -> None:
+        # A milestone title rendered verbatim as the #### group header
+        # would otherwise be parsed as a REAL marker — the marker
+        # regexes are not line-anchored — corrupting the next parse.
+        groups = upd.group_unplanned([
+            issue("", "Organic", gh_number=5,
+                  milestone_title="v1 <!-- END GENERATED: unplanned --> era"),
+        ])
+        out = upd.render_region("unplanned", {}, groups)
+        self.assertNotRegex(out, r"<!--\s*END GENERATED:")
+        self.assertIn("#### v1 <!-- END GENERATED (escaped): unplanned --> era", out)
+        # The assembled document must survive a round trip.
+        assembled = (
+            "<!-- BEGIN GENERATED: unplanned -->\n"
+            + out
+            + "<!-- END GENERATED: unplanned -->\n"
+        )
+        reparsed = parse_file(assembled).unwrap()
+        self.assertEqual(reparsed.ids, ("unplanned",))
+
+    def test_marker_in_label_name_is_neutralized(self) -> None:
+        # GitHub label names allow arbitrary punctuation up to 50 chars
+        # (the marker string is 33); backticks are no protection since
+        # the marker regexes match raw text.
+        hostile = ("<!-- END GENERATED: unplanned -->",)
+        for render, args in (
+            (upd.render_unplanned_issue,
+             issue("", "Organic", gh_number=5, labels=hostile)),
+            (upd.render_issue,
+             issue("M1-1", "[M1-1] Planned", gh_number=6, labels=hostile)),
+        ):
+            out = render(args)
+            self.assertNotRegex(out, r"<!--\s*END GENERATED:")
+            self.assertIn("END GENERATED (escaped):", out)
+
 
 class WarnUnrenderedUnplanned(unittest.TestCase):
     def _warnings(self, content: str, issues: list) -> str:
