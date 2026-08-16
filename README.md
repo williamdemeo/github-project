@@ -171,7 +171,11 @@ available:
    needs no consumer-side changes when it lands.
 
 In CI, consumer projects need no engine either: the shipped workflows
-fetch an engine checkout automatically when the tree has no local copy.
+fetch an engine checkout automatically when the tree has no local copy —
+**pinned**, never floating `main`.  The pin resolves in order: the
+`github-project` revision in your `flake.lock` (so Nix consumers have
+exactly one pin to manage), the `GHPROJECT_ENGINE_REF` repository
+variable, then the default release tag baked into the workflow.
 
 The engine's own `make test` (115 offline tests) and `nix flake check`
 run in this repository — `scripts/VERSION` is the engine version your

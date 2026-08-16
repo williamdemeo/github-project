@@ -57,20 +57,31 @@ endif
         guard-gh guard-engine engine-mode
 .DEFAULT_GOAL := help
 
+# In `path` mode the resolved CLI is (typically) a Nix wrapper carrying
+# its own `gh` on a wrapped PATH, so probing the caller's ambient PATH
+# would fail a `nix profile install` user whose tooling actually works;
+# the CLI reports its own error if gh is genuinely absent.  local and
+# checkout modes run bare python3 scripts and do need ambient gh.
+ifeq ($(ENGINE_MODE),path)
+GH_GUARD :=
+else
+GH_GUARD := guard-gh
+endif
+
 help: ## Show this help
 	@grep -hE '^[a-zA-Z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN {FS = ":.*## "} {printf "  \033[1m%-14s\033[0m %s\n", $$1, $$2}'
 
-populate-dry: guard-engine guard-gh ## Preview what populate would create (no mutations)
+populate-dry: guard-engine $(GH_GUARD) ## Preview what populate would create (no mutations)
 	$(POPULATE) $(PLAN) $(FLAGS) --dry-run
 
-populate: guard-engine guard-gh ## Create labels, milestones, issues on GitHub from $(PLAN)
+populate: guard-engine $(GH_GUARD) ## Create labels, milestones, issues on GitHub from $(PLAN)
 	$(POPULATE) $(PLAN) $(FLAGS)
 
-update: guard-engine guard-gh ## Rewrite $(PLAN)'s generated regions from live GitHub state
+update: guard-engine $(GH_GUARD) ## Rewrite $(PLAN)'s generated regions from live GitHub state
 	$(UPDATE) $(PLAN) $(FLAGS)
 
-update-check: guard-engine guard-gh ## Report whether $(PLAN) is stale without writing
+update-check: guard-engine $(GH_GUARD) ## Report whether $(PLAN) is stale without writing
 	$(UPDATE) $(PLAN) $(FLAGS) --check
 
 lint: guard-engine ## Validate $(PLAN)'s structure (no network)
