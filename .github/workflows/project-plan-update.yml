@@ -32,10 +32,38 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Projects that ran `make init` carry no engine copy; fetch one —
+      # PINNED, never floating `main`: this job runs with write
+      # permissions, so executing whatever is currently on upstream
+      # main would let an upstream change become unreviewed code
+      # execution here.  The pin is the project's own choice, resolved
+      # in order: the github-project rev in flake.lock (the same pin
+      # Nix consumers already upgrade deliberately), the
+      # GHPROJECT_ENGINE_REF repository variable, the default release
+      # tag.  The engine repo itself, and template copies that have not
+      # detached yet, skip both steps and use their local scripts/.
+      - name: Resolve the engine pin (detached consumer projects only)
+        id: enginepin
+        if: hashFiles('scripts/gh_project_update.py') == ''
+        run: |
+          rev=$(jq -r '.nodes["github-project"].locked.rev // empty' \
+                flake.lock 2>/dev/null || true)
+          echo "ref=${rev:-${{ vars.GHPROJECT_ENGINE_REF || 'v0.2.0' }}}" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the engine (detached consumer projects only)
+        if: hashFiles('scripts/gh_project_update.py') == ''
+        uses: actions/checkout@v4
+        with:
+          repository: williamdemeo/github-project
+          ref: ${{ steps.enginepin.outputs.ref }}
+          path: .github-project-engine
+
       - name: Check, and update if armed
         env:
           GH_TOKEN: ${{ github.token }}
           PROJECT_PLAN_AUTO_UPDATE: ${{ vars.PROJECT_PLAN_AUTO_UPDATE }}
+          GHPROJECT_DIR: .github-project-engine
           # Required here.  The update script strips GH_TOKEN and
           # GITHUB_TOKEN by default, which is exactly how Actions
           # authenticates; without this every gh call exits with a

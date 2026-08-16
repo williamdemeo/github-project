@@ -54,9 +54,31 @@ set -uo pipefail
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 PLAN="${PLAN:-docs/GITHUB_PROJECT.md}"
 MODE="${PROJECT_PLAN_AUTO_UPDATE:-}"
-UPDATE="${UPDATE:-python3 scripts/gh_project_update.py}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 BRANCH="project-plan-update"
+
+# Engine resolution, mirroring the Makefile's channels: an explicit
+# $UPDATE override wins; otherwise local scripts (engine repo or
+# pre-init template copy), then a gh-project-update CLI on PATH, then a
+# $GHPROJECT_DIR checkout (the workflow fetches one when no local copy
+# exists).
+if [ -z "${UPDATE:-}" ]; then
+  if [ -f scripts/gh_project_update.py ]; then
+    UPDATE="python3 scripts/gh_project_update.py"
+  elif command -v gh-project-update >/dev/null 2>&1; then
+    UPDATE="gh-project-update"
+  elif [ -n "${GHPROJECT_DIR:-}" ] \
+      && [ -f "$GHPROJECT_DIR/scripts/gh_project_update.py" ]; then
+    UPDATE="python3 $GHPROJECT_DIR/scripts/gh_project_update.py"
+  else
+    {
+      printf '### The freshness check could not run\n\n'
+      printf 'No engine found: no local scripts/, no gh-project-update on\n'
+      printf 'PATH, and no usable GHPROJECT_DIR.\n'
+    } >> "$SUMMARY"
+    exit 0
+  fi
+fi
 
 flags=()
 [ -n "${REPO}" ] && flags+=(--repo "$REPO")

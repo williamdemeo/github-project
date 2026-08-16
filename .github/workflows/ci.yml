@@ -1,10 +1,16 @@
 name: ci
 
-# The template's own CI: structural lint of the example plan, the test
-# suite (offline; a recorded fake gh), shell lint, and a minimal Python
-# lint.  Deliberately not Nix-based — consumers must be able to use this
-# template with nothing but python3, gh, and make (the flake is a
-# convenience, never a requirement).
+# CI for both lives of this tree.  In the engine repository (and in
+# template copies that have not yet run `make init`) the local engine
+# is present: its test suite runs and the plan is linted with it.  In a
+# detached consumer project the engine steps skip themselves (hashFiles
+# on an absent file is empty), an engine checkout is fetched, and the
+# plan lint still runs — so consumers keep a structural gate on
+# docs/GITHUB_PROJECT.md with no engine files in their tree.
+#
+# Deliberately not Nix-based: the flake is the primary *distribution*
+# channel, but CI here must not force Nix on consumers (setup-python is
+# enough).  Engine-repo flake checks run in the separate nix job below.
 
 on:
   pull_request:
@@ -28,11 +34,34 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Structural lint of the example plan
-        run: make lint
-
-      - name: Test suite
+      - name: Engine test suite (local engine present)
+        if: hashFiles('scripts/gh_project_populate.py') != ''
         run: make test
+
+      # Pinned, never floating `main`: a consumer's CI must not change
+      # behavior underneath an unchanged commit.  Resolution order:
+      # the github-project rev in flake.lock (the pin Nix consumers
+      # upgrade deliberately), the GHPROJECT_ENGINE_REF repository
+      # variable, the default release tag.
+      - name: Resolve the engine pin (detached consumer projects only)
+        id: enginepin
+        if: hashFiles('scripts/gh_project_populate.py') == ''
+        run: |
+          rev=$(jq -r '.nodes["github-project"].locked.rev // empty' \
+                flake.lock 2>/dev/null || true)
+          echo "ref=${rev:-${{ vars.GHPROJECT_ENGINE_REF || 'v0.2.0' }}}" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the engine (detached consumer projects only)
+        if: hashFiles('scripts/gh_project_populate.py') == ''
+        uses: actions/checkout@v4
+        with:
+          repository: williamdemeo/github-project
+          ref: ${{ steps.enginepin.outputs.ref }}
+          path: .github-project-engine
+
+      - name: Structural lint of the plan file
+        run: make lint GHPROJECT_DIR=.github-project-engine
 
   static:
     runs-on: ubuntu-latest
@@ -47,6 +76,50 @@ jobs:
         run: shellcheck scripts/ci/*.sh
 
       - name: Python lint (errors and pyflakes only)
+        if: hashFiles('scripts/**/*.py') != ''
         run: |
           pip install ruff
           ruff check --select E9,F scripts/
+
+  # Engine-repo only: build the package and run the suite in the Nix
+  # sandbox.  Skipped automatically in detached consumers (no local
+  # engine → nothing to build here; their flake pins the engine input).
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect a local engine flake
+        id: engine
+        run: |
+          if [ -f scripts/VERSION ] && [ -f flake.nix ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: cachix/install-nix-action@v27
+        if: steps.engine.outputs.present == 'true'
+
+      - name: nix flake check (builds the engine, runs the suite sandboxed)
+        if: steps.engine.outputs.present == 'true'
+        run: nix flake check
+
+      # The primary acceptance path end to end: assemble a detached
+      # consumer (make init), point its flake input at the engine under
+      # test, and run the engine through the consumer's own dev shell
+      # and re-exported apps — so breakage in templates/consumer/ or in
+      # the detach lifecycle fails CI, not the first real consumer.
+      - name: Consumer smoke test (detach, then run via the consumer flake)
+        if: steps.engine.outputs.present == 'true'
+        run: |
+          consumer=$(mktemp -d)/project
+          cp -r . "$consumer"
+          cd "$consumer"
+          rm -rf .git result
+          make init INIT_YES=1
+          git init -q && git add -A
+          nix flake lock --override-input github-project "path:$GITHUB_WORKSPACE"
+          test "$(nix develop --command make --no-print-directory engine-mode | tail -1)" = path
+          nix develop --command make lint
+          nix run .#lint -- docs/GITHUB_PROJECT.md
