@@ -59,8 +59,11 @@ class MakeInit(unittest.TestCase):
     def make(self, *args: str, env_extra: dict | None = None,
              cwd: Path | None = None) -> subprocess.CompletedProcess:
         env = {**os.environ, **(env_extra or {})}
+        # --no-print-directory: under `make test` these are sub-makes,
+        # and the inherited -w directory chatter would pollute the
+        # single-line outputs the assertions read.
         return subprocess.run(
-            ["make", *args], cwd=cwd or self.tree,
+            ["make", "--no-print-directory", *args], cwd=cwd or self.tree,
             env=env, capture_output=True, text=True, timeout=300,
         )
 
@@ -133,7 +136,7 @@ class MakeInit(unittest.TestCase):
 class PreInitTree(unittest.TestCase):
     def test_engine_repo_resolves_local(self) -> None:
         proc = subprocess.run(
-            ["make", "engine-mode"], cwd=REPO_ROOT,
+            ["make", "--no-print-directory", "engine-mode"], cwd=REPO_ROOT,
             capture_output=True, text=True, timeout=60,
         )
         self.assertEqual(proc.stdout.strip(), "local")

@@ -42,8 +42,12 @@
 
           # The suite is offline by design (recorded fake `gh`), so it
           # can run inside the sandbox; `nix flake check` gets teeth.
+          # patchShebangs first: the fake gh's `#!/usr/bin/env python3`
+          # has no /usr/bin/env in the sandbox, and the resulting ENOENT
+          # masquerades as "gh: No such file or directory".
           doCheck = true;
           checkPhase = ''
+            patchShebangs tests/fake_gh
             ${pkgs.python3.interpreter} -m unittest discover -s tests
           '';
 
