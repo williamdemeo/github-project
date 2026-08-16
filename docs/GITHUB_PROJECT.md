@@ -162,6 +162,24 @@ compatibility guarantees.
 
 <!-- END GENERATED: milestone-2 -->
 
+## Unplanned work
+
+Issues filed organically on GitHub — no `[MN-k]` prefix in the title —
+are invisible to the milestone regions above.  This region mirrors
+them, grouped by GitHub milestone and sorted by issue number, so
+field-driven work still shows up in the plan.  The `[MN-k]` prefix
+remains the stable-identifier contract of the milestone regions; here
+the GitHub number is the only handle.  Delete this section if you want
+planned-only rendering (update then warns whenever unplanned issues
+exist).
+
+<!-- BEGIN GENERATED: unplanned -->
+
+_(no organically-filed issues — every issue on GitHub carries a `[MN-k]` planning prefix)_
+<!-- END GENERATED: unplanned -->
+
+---
+
 ## How to use this file
 
 1. Replace the plan above with your project (keep the structure), set

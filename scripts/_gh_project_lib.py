@@ -136,6 +136,11 @@ class Issue:
                                               # from a recorded `(#N)` heading
                                               # suffix on the parse side
     assignees: tuple[str, ...] = ()           # GitHub logins; read side only
+    milestone_title: Optional[str] = None     # GitHub milestone title verbatim;
+                                              # read side only — the unplanned
+                                              # region groups by it, since
+                                              # organically-filed issues have
+                                              # no plan index
 
 
 @dataclass(frozen=True)
@@ -165,6 +170,31 @@ REPOSITORY_LINE_RE = re.compile(
 )
 
 ISSUE_HEADING_RE = re.compile(r"^### Issue (M\d+-\d+[a-z]?): (.+?)[ \t]*$", re.MULTILINE)
+
+# The `unplanned` generated region mirrors organically-filed issues —
+# GitHub titles with no `[MN-k]` prefix, rendered by update.  Its
+# content is GitHub-owned mirror text, so nothing in it may ever be read
+# back as plan STRUCTURE: an organic title that happens to look like a
+# planning heading (`Issue M1-5: fix the parser`) must not become a
+# phantom plan issue, and one that merely starts with "Issue" must not
+# trip the malformed-heading lint.
+UNPLANNED_REGION_RE = re.compile(
+    r"(<!--\s*BEGIN GENERATED:\s*unplanned\s*-->)(.*?)(<!--\s*END GENERATED:\s*unplanned\s*-->)",
+    re.DOTALL,
+)
+
+
+def mask_unplanned_regions(text: str) -> str:
+    """Blank the INTERIOR of every `unplanned` region for plan parsing.
+
+    Marker lines survive (region structure stays checkable); every
+    non-newline character between them becomes a space, so offsets and
+    line numbers in diagnostics still point at the real file.
+    """
+    def blank(m: re.Match) -> str:
+        interior = "".join(c if c == "\n" else " " for c in m.group(2))
+        return m.group(1) + interior + m.group(3)
+    return UNPLANNED_REGION_RE.sub(blank, text)
 
 # A recorded issue number at the end of a heading: `(#123)` as written
 # back by populate, or `(#123, closed)` as rendered by update.
@@ -210,12 +240,18 @@ def parse_repository(text: str) -> Optional[str]:
 
 
 def parse_project_plan(text: str) -> ProjectPlan:
-    """Parse the structured project plan markdown into a ProjectPlan."""
+    """Parse the structured project plan markdown into a ProjectPlan.
+
+    The interiors of `unplanned` regions are masked first: they mirror
+    GitHub-owned content, never plan structure (see
+    mask_unplanned_regions).
+    """
+    masked = mask_unplanned_regions(text)
     return ProjectPlan(
-        repository=parse_repository(text),
-        milestones=tuple(_parse_milestones(text)),
-        labels=tuple(_parse_labels(text)),
-        issues=tuple(_parse_issues(text)),
+        repository=parse_repository(masked),
+        milestones=tuple(_parse_milestones(masked)),
+        labels=tuple(_parse_labels(masked)),
+        issues=tuple(_parse_issues(masked)),
     )
 
 
@@ -692,10 +728,17 @@ def lint_plan(text: str) -> tuple[Problem, ...]:
             f"cannot tell which milestone issues M{n}-* belong to",
         ))
 
+    # The heading scans run on MASKED text: an `unplanned` region
+    # mirrors organic GitHub titles, and one that merely starts with
+    # "Issue" (or resembles a milestone heading) is mirror content, not
+    # a malformed plan heading.  Offsets survive masking, so line
+    # numbers still point at the real file.
+    scannable = mask_unplanned_regions(text)
+
     # A heading that says `### Issue` but does not parse is worse than a
     # missing one: populate never pushes it, and the next update erases
     # it when the surrounding generated region is rebuilt from GitHub.
-    for m in re.finditer(r"^### Issue\b[^\n]*$", text, re.MULTILINE):
+    for m in re.finditer(r"^### Issue\b[^\n]*$", scannable, re.MULTILINE):
         if not ISSUE_HEADING_RE.match(m.group(0)):
             problems.append(Problem(
                 "error",
@@ -711,7 +754,7 @@ def lint_plan(text: str) -> tuple[Problem, ...]:
     # headings are scanned — prose headings like `### Milestone
     # dependencies` are legitimate (the exemplar plans use them).
     milestone_heading_re = re.compile(r"^### Milestone (\d+) — (.+)$")
-    for m in re.finditer(r"^### Milestone\s+\d+\b[^\n]*$", text, re.MULTILINE):
+    for m in re.finditer(r"^### Milestone\s+\d+\b[^\n]*$", scannable, re.MULTILINE):
         if not milestone_heading_re.match(m.group(0)):
             problems.append(Problem(
                 "error",
@@ -1032,6 +1075,7 @@ def _parse_issues_json(stdout: str) -> Result[list[Issue], PipelineError]:
                 gh_title = gh_ms.get("title", "")
                 tm = re.match(r"^(\d+)\.", gh_title)
                 inferred = int(tm.group(1)) if tm else (ms_idx if ms_idx is not None else 0)
+            gh_milestone = item.get("milestone") or {}
             out.append(Issue(
                 id=issue_id,
                 title=title,
@@ -1043,6 +1087,7 @@ def _parse_issues_json(stdout: str) -> Result[list[Issue], PipelineError]:
                 assignees=tuple(
                     a["login"] for a in item.get("assignees", []) or []
                 ),
+                milestone_title=gh_milestone.get("title") or None,
             ))
         return out
     return _parse_json(stdout, "issues").map(to_issues)

@@ -45,6 +45,21 @@ Issue bodies of already-created issues are edited ON GITHUB (the region
 mirror would overwrite in-file edits on the next update).  Prose outside
 regions is edited in the file.
 
+## Organically-filed issues (the `unplanned` region)
+
+Issues filed directly on GitHub without a `[MN-k]` title prefix never
+appear in milestone regions — the prefix is those regions' identifier
+contract.  A region marked `<!-- BEGIN GENERATED: unplanned -->` /
+`<!-- END GENERATED: unplanned -->` mirrors them instead: grouped by
+GitHub milestone (title verbatim, no-milestone group last), sorted by
+issue number, same block shape minus the id.  Everything inside it is
+GitHub-owned mirror content — the parser and lint deliberately ignore
+it, so organic titles can never inject plan structure.  To promote an
+organic issue into the plan, retitle it on GitHub with the next free
+`[MN-k]` prefix; the next update moves it into its milestone region.
+If unplanned issues exist and the file has no such region, update warns
+on stderr.
+
 ## The scheduled freshness workflow
 
 `.github/workflows/project-plan-update.yml` runs Mondays (and on

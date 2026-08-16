@@ -183,12 +183,18 @@ class TitleEditResilience(FakeGhHarness):
         self.assertEqual(len(self.issues_on_fake_github()), 4)
         self.assertIn(f"- exists: issue #{victim['number']}", rerun.stdout)
 
-        # Update still works: the prefix-less issue simply leaves the
-        # region (it has no stable identifier to render under).
+        # Update still works: the prefix-less issue leaves its milestone
+        # region (no stable identifier to render under) and surfaces in
+        # the unplanned region instead — visible, not vanished.
         upd = self.update()
         self.assertEqual(upd.returncode, 0, upd.stderr)
         text = self.plan_path.read_text(encoding="utf-8")
-        self.assertNotIn("renamed with no prefix", text)
+        unplanned = text.split("<!-- BEGIN GENERATED: unplanned -->")[1]
+        unplanned = unplanned.split("<!-- END GENERATED: unplanned -->")[0]
+        self.assertIn("renamed with no prefix", unplanned)
+        milestone_1 = text.split("<!-- BEGIN GENERATED: milestone-1 -->")[1]
+        milestone_1 = milestone_1.split("<!-- END GENERATED: milestone-1 -->")[0]
+        self.assertNotIn("renamed with no prefix", milestone_1)
 
 
 class MilestoneAvailability(FakeGhHarness):
@@ -330,6 +336,71 @@ class UpdateRoundTrip(FakeGhHarness):
         proc = self.run_script("gh_project_update.py", "--check")
         self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
         self.assertIn("no repository", proc.stderr)
+
+
+class OrganicIssues(FakeGhHarness):
+    """Issue #3 end to end: organically-filed issues render into the
+    `unplanned` region, stay out of populate's way, and cannot inject
+    plan structure on reparse."""
+
+    def seed_organic(self) -> None:
+        issues = self.issues_on_fake_github()
+        issues += [
+            {"number": 68, "title": "Harden the flaky timeout",
+             "body": "Field-driven fix.",
+             "labels": [{"name": "documentation"}],
+             "milestone": {"title": "1. Working core"},
+             "state": "OPEN", "assignees": []},
+            {"number": 70, "title": "Issue M9-9: looks like a plan heading",
+             "body": "Adversarial organic title.",
+             "labels": [], "milestone": None,
+             "state": "OPEN", "assignees": []},
+        ]
+        (self.state / "issues.json").write_text(json.dumps(issues))
+
+    def unplanned_region(self) -> str:
+        text = self.plan_path.read_text(encoding="utf-8")
+        inner = text.split("<!-- BEGIN GENERATED: unplanned -->")[1]
+        return inner.split("<!-- END GENERATED: unplanned -->")[0]
+
+    def test_rendered_grouped_and_check_stable(self) -> None:
+        self.assertEqual(self.populate().returncode, 0)
+        self.seed_organic()
+        self.assertEqual(self.update().returncode, 0)
+
+        region = self.unplanned_region()
+        self.assertIn("#### 1. Working core", region)
+        self.assertIn("### Harden the flaky timeout (#68)", region)
+        self.assertIn("#### (no milestone)", region)
+        self.assertIn("### Issue M9-9: looks like a plan heading (#70)", region)
+
+        # --check-stable across runs (the acceptance criterion).
+        self.assertEqual(self.update("--check").returncode, 0)
+
+        # Closing an organic issue is drift, healed by the next update.
+        issues = self.issues_on_fake_github()
+        next(i for i in issues if i["number"] == 68)["state"] = "CLOSED"
+        (self.state / "issues.json").write_text(json.dumps(issues))
+        self.assertEqual(self.update("--check").returncode, 1)
+        self.assertEqual(self.update().returncode, 0)
+        self.assertIn("(#68, closed)", self.unplanned_region())
+
+    def test_mirror_content_never_becomes_plan_structure(self) -> None:
+        self.assertEqual(self.populate().returncode, 0)
+        self.seed_organic()
+        self.assertEqual(self.update().returncode, 0)
+
+        # The updated file — now mirroring an adversarial organic title
+        # and a plan-foreign label — still lints clean...
+        lint = self.run_script("gh_project_lint.py")
+        self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
+
+        # ...and a re-populate plans nothing: no phantom M9-9, no
+        # duplicate of anything.
+        rerun = self.populate("--dry-run")
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertNotIn("+ create issue", rerun.stdout)
+        self.assertNotIn("M9-9", rerun.stdout)
 
 
 class PopulateRefusesBrokenPlans(FakeGhHarness):

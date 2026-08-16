@@ -33,8 +33,15 @@ class CleanPlan(unittest.TestCase):
 
 class MarkerProblems(unittest.TestCase):
     def test_unterminated(self) -> None:
-        broken = PLAN.replace("<!-- END GENERATED: milestone-2 -->\n", "")
+        # Remove the LAST region's END: no later marker can mis-pair.
+        broken = PLAN.replace("<!-- END GENERATED: unplanned -->\n", "")
         self.assertTrue(any("unterminated" in e for e in errors(broken)))
+
+    def test_deleted_end_mid_file_reports_mismatch(self) -> None:
+        # Removing an inner END makes its BEGIN close against the next
+        # region's END — reported as mismatched markers.
+        broken = PLAN.replace("<!-- END GENERATED: milestone-2 -->\n", "")
+        self.assertTrue(any("mismatched" in e for e in errors(broken)))
 
     def test_mismatched(self) -> None:
         broken = PLAN.replace(
@@ -123,6 +130,26 @@ class LabelSectionProblems(unittest.TestCase):
             "- `documentation` (0e8a16) — Same again.",
         )
         self.assertTrue(any("duplicate label `documentation`" in e
+                            for e in errors(broken)))
+
+
+class UnplannedRegionIsMirror(unittest.TestCase):
+    def test_organic_headings_inside_region_are_not_flagged(self) -> None:
+        mirrored = PLAN.replace(
+            "_(no organically-filed issues — every issue on GitHub "
+            "carries a `[MN-k]` planning prefix)_",
+            "### Issue tracker went down twice (#12)\n\n"
+            "**Labels:** `ops`\n\nOrganic body.\n\n"
+            "### Milestone 3 retro notes (#13)\n\nMore organic body.\n",
+        )
+        self.assertEqual(errors(mirrored), [])
+
+    def test_same_heading_outside_region_is_still_flagged(self) -> None:
+        broken = PLAN.replace(
+            "## How to use",
+            "### Issue tracker went down twice (#12)\n\n## How to use",
+        )
+        self.assertTrue(any("malformed issue heading" in e
                             for e in errors(broken)))
 
 
