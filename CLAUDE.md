@@ -43,7 +43,13 @@ Corollaries for editing:
   frozen dataclasses, pure parsing/planning core with `gh` calls at the
   edges, a `File:` header docstring in every file, and a test for every
   pure function.  Match it.
-- The scripts directory is self-contained on purpose (vendored `_utils`,
-  `scripts/VERSION`): downstream projects re-vendor it wholesale.  Do
-  not add imports that reach outside `scripts/`, and bump
-  `scripts/VERSION` when its behavior changes.
+- The engine under `scripts/` has exactly one home: this repository.
+  Consumer projects never carry a copy — `make init` detaches a fresh
+  template copy, after which the Makefile resolves the engine from a
+  Nix dev shell (flake input), an installed `gh-project-*` CLI, or a
+  `GHPROJECT_DIR` checkout.  Keep the engine self-contained (no imports
+  reaching outside `scripts/`), and bump `scripts/VERSION` — which is
+  also the flake package version — when its behavior changes.
+- If `scripts/gh_project_populate.py` is absent, you are in a detached
+  consumer project: the engine's code and tests live upstream; work
+  with the plan file and the make targets only.

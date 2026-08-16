@@ -50,7 +50,23 @@ that.)
    cd your-project
    ```
 
-2. **Author your plan.**  Replace the worked example in
+2. **Detach the engine copy** (one time).  Template creation copies
+   this whole repository — including the engine, which has exactly one
+   home ([see the channels](#the-engine-getting-and-upgrading-it)
+   below).  Keeping a copy would freeze you at creation-day behavior,
+   so:
+
+   ```sh
+   make init
+   ```
+
+   deletes the copied engine, installs a consumer `flake.nix` that
+   takes the engine as a pinned input, and prints the next steps
+   (`nix flake lock` to pin — or set `GHPROJECT_DIR` to an engine
+   checkout if you don't use Nix).  Every `make` target below works
+   identically before and after this step.
+
+3. **Author your plan.**  Replace the worked example in
    `docs/GITHUB_PROJECT.md` with your milestones, labels, and issues —
    keep the structure (the example demonstrates every construct exactly
    once).  Set the header line to your repository:
@@ -59,7 +75,7 @@ that.)
    **Repository**:  `you/your-project`
    ```
 
-3. **Validate and preview** (lint needs no network; the dry run makes
+4. **Validate and preview** (lint needs no network; the dry run makes
    read-only API calls):
 
    ```sh
@@ -67,7 +83,7 @@ that.)
    make populate-dry
    ```
 
-4. **Push the structure to GitHub** (prompts before creating):
+5. **Push the structure to GitHub** (prompts before creating):
 
    ```sh
    make populate
@@ -76,7 +92,7 @@ that.)
    Each created issue's number is written back into the file
    immediately, as a `(#N)` suffix on its heading — commit the result.
 
-5. **From then on**: work the issues on GitHub as usual, and run
+6. **From then on**: work the issues on GitHub as usual, and run
 
    ```sh
    make update
@@ -111,52 +127,87 @@ summary — it never commits.  To let it act, set the repository variable
 
 Delete the workflow file if you want no scheduled runs at all.
 
-## Upgrading a project created from this template
+## The engine: getting and upgrading it
 
-Template consumers fork at creation time and never see later
-improvements — except that the tooling is deliberately confined to two
-self-contained paths (`scripts/`, plus the workflow shell in
-`scripts/ci/`), so re-vendoring is one command.  From your project's
-root:
+Your project owns its **data** — `docs/GITHUB_PROJECT.md`, a thin
+Makefile, the workflows.  The **engine** (`gh_project_populate.py`,
+`gh_project_update.py`, `gh_project_lint.py` and their library) is
+never copied into consumer projects: it has exactly one home, this
+repository, and the Makefile finds it through whichever channel is
+available:
 
-```sh
-V=$(curl -fsSL https://raw.githubusercontent.com/williamdemeo/github-project/main/scripts/VERSION) \
-  && curl -fsSL https://github.com/williamdemeo/github-project/archive/refs/tags/v$V.tar.gz \
-  | tar -xz --strip-components=1 "github-project-$V/scripts" "github-project-$V/Makefile"
-```
+1. **Nix flake input** (primary).  `make init` installs a `flake.nix`
+   taking this repository as an input; your `flake.lock` pins the
+   engine version.  `nix develop` puts the `gh-project-*` CLIs on PATH
+   (the Makefile finds them there), and the re-exported apps allow
+   direct runs:
 
-Then run `make test` and review `git diff` before committing.  Your
-`docs/GITHUB_PROJECT.md`, workflows, and everything else are untouched;
-`scripts/VERSION` records which release you now carry.
+   ```sh
+   nix run .#update -- docs/GITHUB_PROJECT.md
+   ```
+
+   Upgrade deliberately:
+
+   ```sh
+   nix flake update github-project
+   ```
+
+   (If your project already has a flake, merge the input and outputs
+   from `templates/consumer/flake.nix` into it instead.)
+
+2. **Checkout** (no Nix).  Clone this repository anywhere and point
+   `GHPROJECT_DIR` at it — the engine is stdlib-only Python 3.11+, so a
+   plain `python3` runs it:
+
+   ```sh
+   make update GHPROJECT_DIR=~/git/github-project
+   ```
+
+   Upgrading is `git pull` in that checkout.
+
+3. **Installed CLI** (planned).  A `pyproject.toml` with console entry
+   points for `uv tool install` / pipx from a tagged release; the
+   Makefile already resolves `gh-project-*` from PATH, so this channel
+   needs no consumer-side changes when it lands.
+
+In CI, consumer projects need no engine either: the shipped workflows
+fetch an engine checkout automatically when the tree has no local copy.
+
+The engine's own `make test` (115 offline tests) and `nix flake check`
+run in this repository — `scripts/VERSION` is the engine version your
+lock or checkout carries.
 
 ## The Nix path
 
 A machine with [Nix](https://nixos.org/) (flakes enabled) needs nothing
-else installed — not even Python:
+else installed — not even Python.  In this repository (or a template
+copy): `nix develop` provides python3, gh, and make.  In a detached
+consumer project, `nix develop` additionally carries the engine CLIs,
+pinned by your lock.
 
-```sh
-nix develop        # provides python3, gh, gnumake
-make lint
-```
-
-The flake is a convenience, never a requirement: this repository's own
-CI uses plain `setup-python`, and everything documented above works
-without Nix.
+The flake is the primary way the engine is *distributed*, but never a
+requirement for *using* it: the setup-python CI jobs and the checkout
+channel work without Nix.
 
 ## Repository layout
 
 ```
 docs/GITHUB_PROJECT.md    the roadmap (a worked example until you replace it)
-scripts/                  self-contained tooling (re-vendorable as a unit)
+scripts/                  THE ENGINE — lives here and only here; `make init`
+                          removes it from projects created off the template
   gh_project_populate.py    file → GitHub
   gh_project_update.py      GitHub → file
   gh_project_lint.py        structural validation, no network
   _gh_project_lib.py        shared parsing, planning, gh client
-  _utils/                   vendored functional-Python core (Result, file_ops, ...)
+  _utils/                   functional-Python core (Result, file_ops, ...)
   tests/                    offline test suite (recorded fake `gh`)
-  VERSION                   which release of the tooling this tree carries
+  ci/                       workflow shell — survives `make init`
+  VERSION                   the engine version (also the flake package version)
+templates/consumer/       the flake.nix `make init` installs in consumers
+flake.nix                 the engine package + apps (+ dev shell)
 .claude/skills/           committed Claude Code skills for the two workflows
-.github/workflows/        CI + the opt-in freshness workflow
+.github/workflows/        CI + the opt-in freshness workflow (both self-adapt
+                          to trees with no engine copy)
 ```
 
 ## Design notes
@@ -171,11 +222,15 @@ scripts/                  self-contained tooling (re-vendorable as a unit)
   reported instead of silently creating a parallel scheme.
 - **Staged and rate-limit-aware**: `--labels-only`, `--milestones-only`,
   `--issues-only`, `--start-from M2-3`, `--delay`.
+- **The engine is referenced, never copied**: consumer projects hold
+  data (the plan file, a thin Makefile) and pin the engine by flake
+  lock or checkout — a copied engine decays the moment the real one
+  improves, which is the failure mode this repository exists to end.
 - Provenance: this template distills the gh-project tooling that grew up
   in [agda-algebras](https://github.com/ualib/agda-algebras),
   [williamdemeo.github.io](https://github.com/williamdemeo/williamdemeo.github.io),
-  and agda-native-air, and is now its upstream — fixes land here and
-  downstream projects re-vendor.
+  and agda-native-air, and is now its single home — fixes land here and
+  reach consumers through their engine pin.
 
 ## License
 

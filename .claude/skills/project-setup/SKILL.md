@@ -13,6 +13,13 @@ to GitHub.
 
 ## Procedure
 
+0. **Detach the engine copy** (fresh template copies only): `make init`
+   deletes the copied engine — its only home is
+   williamdemeo/github-project — and installs a consumer flake taking
+   it as a pinned input.  Then `nix flake lock` (or set `GHPROJECT_DIR`
+   to an engine checkout).  Skip if `scripts/gh_project_populate.py` is
+   already absent.  All make targets below work the same before and
+   after.
 1. **Author the plan** by replacing the worked example in
    `docs/GITHUB_PROJECT.md`, keeping every structural convention:
    - `**Repository**:  \`owner/name\`` header line (this is where the
