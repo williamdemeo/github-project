@@ -338,6 +338,59 @@ class UpdateRoundTrip(FakeGhHarness):
         self.assertIn("no repository", proc.stderr)
 
 
+class LineBreakHandling(FakeGhHarness):
+    """Issue #6: populate strips authored hard line breaks by default,
+    so GitHub soft-wraps prose; --keep-line-breaks opts out.  Either
+    way the mode is stated in the output."""
+
+    WRAPPED_BODY = "Body of\nM1-1 wrapped over\nthree lines."
+    WRAPPED_DESC = "Build the\ncore, wrapped."
+
+    def write_wrapped_plan(self) -> None:
+        self.plan_path.write_text(
+            PLAN.replace("Body of M1-1.", self.WRAPPED_BODY)
+                .replace("Build the core.", self.WRAPPED_DESC),
+            encoding="utf-8",
+        )
+
+    def created_m11_body(self) -> str:
+        issues = self.issues_on_fake_github()
+        return next(i for i in issues
+                    if i["title"].startswith("[M1-1]"))["body"]
+
+    def test_default_strips_breaks_from_bodies_and_descriptions(self) -> None:
+        self.write_wrapped_plan()
+        proc = self.populate()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("Line breaks: stripped from prose", proc.stdout)
+
+        self.assertTrue(self.created_m11_body().startswith(
+            "Body of M1-1 wrapped over three lines."))
+        milestones = json.loads((self.state / "milestones.json").read_text())
+        core = next(m for m in milestones if m["title"] == "1. Core")
+        self.assertTrue(core["description"].startswith(
+            "Build the core, wrapped."))
+
+        # Write-back still lands on the authored (wrapped) file.
+        text = self.plan_path.read_text(encoding="utf-8")
+        self.assertIn("### Issue M1-1: Set up the build (#", text)
+        self.assertIn(self.WRAPPED_BODY, text)  # file itself untouched
+
+    def test_keep_line_breaks_pushes_verbatim(self) -> None:
+        self.write_wrapped_plan()
+        proc = self.populate("--keep-line-breaks")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("Line breaks: preserved as authored", proc.stdout)
+        self.assertTrue(self.created_m11_body().startswith(self.WRAPPED_BODY))
+
+    def test_next_steps_hint_only_after_real_creations(self) -> None:
+        first = self.populate()
+        self.assertIn("first `update --check` on a", first.stdout)
+        rerun = self.populate()
+        self.assertEqual(rerun.returncode, 0, rerun.stderr)
+        self.assertNotIn("first `update --check` on a", rerun.stdout)
+
+
 class OrganicIssues(FakeGhHarness):
     """Issue #3 end to end: organically-filed issues render into the
     `unplanned` region, stay out of populate's way, and cannot inject

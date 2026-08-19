@@ -91,6 +91,18 @@ that.)
 
    Each created issue's number is written back into the file
    immediately, as a `(#N)` suffix on its heading — commit the result.
+   By default populate strips hard line breaks from prose before
+   pushing, so GitHub soft-wraps your issue bodies and milestone
+   descriptions (`--keep-line-breaks` preserves them verbatim; the run
+   output states which mode applied).
+
+   Then run a plain `make update` once and commit it as a
+   normalization: update's canonical rendering differs cosmetically
+   from authored input (it drops the `**Milestone:**` lines, reorders
+   labels to GitHub's order, and trims trailing `---` separators), so
+   the first `make update-check` on a freshly populated plan is
+   ALWAYS stale — that is normalization pending, not a bug.  After the
+   normalization commit, `update-check` is your drift gate.
 
 6. **From then on**: work the issues on GitHub as usual, and run
 
