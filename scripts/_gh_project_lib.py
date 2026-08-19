@@ -474,6 +474,11 @@ def record_issue_number(text: str, issue_id: str, gh_number: int) -> tuple[str, 
 # escape is deterministic, keeping `--check` stable across renders.
 MARKER_IN_BODY_RE = re.compile(r"<!--(\s*)(BEGIN|END) GENERATED:")
 
+# What update renders into a region when the GitHub issue body is
+# empty.  Shared so populate's --sync-bodies can recognize the
+# round-tripped sentinel as "still empty" rather than as new content.
+EMPTY_BODY_PLACEHOLDER = "_(no description on GitHub)_"
+
 
 def neutralize_markers(body: str) -> str:
     """Defang region-marker look-alikes inside live GitHub content."""
@@ -1203,7 +1208,18 @@ def _parse_object_field(
             error_type=ErrorType.PARSING_ERROR,
             message=f"expected a JSON object for {kind}, got {type(data).__name__}",
         ))
-    return Result.ok(data.get(field) or "")
+    value = data.get(field)
+    if value is None:
+        return Result.ok("")
+    if not isinstance(value, str):
+        return Result.err(PipelineError(
+            error_type=ErrorType.PARSING_ERROR,
+            message=(
+                f"expected {kind}.{field} to be a string, "
+                f"got {type(value).__name__}"
+            ),
+        ))
+    return Result.ok(value)
 
 
 def _parse_milestone_create_response(stdout: str) -> Result[int, PipelineError]:

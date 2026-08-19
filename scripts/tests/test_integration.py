@@ -411,7 +411,7 @@ class SyncBodiesClassification(unittest.TestCase):
     def setUp(self) -> None:
         sys.path.insert(0, str(SCRIPTS_DIR))
         from gh_project_populate import classify_sync
-        self.classify = classify_sync
+        self.classify = classify_sync   # accepts allow_empty_placeholder
 
     def test_identical_is_in_sync(self) -> None:
         self.assertEqual(self.classify("Body.\n", "Body.\n"), "in-sync")
@@ -459,6 +459,23 @@ class SyncBodiesClassification(unittest.TestCase):
         self.assertEqual(self.classify("a  \nb", "a\nb"), "reflow")
         self.assertEqual(self.classify("a\\\nb", "a\nb"), "reflow")
 
+    def test_empty_body_sentinel_is_in_sync_for_issues_only(self) -> None:
+        # update renders an empty GitHub body as the placeholder; the
+        # parsed-back sentinel must count as "still empty" for ISSUE
+        # pairs — but a milestone description could legitimately BE
+        # that text, so without the flag it stays divergent.
+        sentinel = "_(no description on GitHub)_"
+        self.assertEqual(
+            self.classify(sentinel, "", allow_empty_placeholder=True),
+            "in-sync",
+        )
+        self.assertEqual(self.classify(sentinel, ""), "divergent")
+        # A nonempty, different GitHub body gets no such pass.
+        self.assertEqual(
+            self.classify(sentinel, "Real body.", allow_empty_placeholder=True),
+            "divergent",
+        )
+
     def test_escaped_mirror_of_marker_bearing_body_is_in_sync(self) -> None:
         # update writes the DEFANGED form of marker-bearing GitHub
         # bodies into the file; that mirror must classify in-sync, or
@@ -483,41 +500,47 @@ class SyncBodiesClassification(unittest.TestCase):
         # mutating and classifies against THAT.
         import contextlib
         import io
-        from gh_project_populate import execute_sync_bodies
+        from gh_project_populate import SyncTarget, execute_sync_bodies
         from _utils import Result
 
         quiet = io.StringIO()
         pushes: list[str] = []
-        pair = (
-            "issue M1-1 (#1)",
-            "Body, reflowed onto one line.",
-            "Body,\nreflowed onto\none line.",          # snapshot: reflow-safe
-            lambda: Result.ok("Edited on GitHub meanwhile."),  # fresh: divergent
-            lambda: (pushes.append("pushed"), Result.ok(None))[1],
+        target = SyncTarget(
+            label="issue M1-1 (#1)",
+            kind="issue",
+            file_text="Body, reflowed onto one line.",
+            snapshot_text="Body,\nreflowed onto\none line.",  # reflow-safe
+            fetch=lambda: Result.ok("Edited on GitHub meanwhile."),  # divergent
+            push=lambda: (pushes.append("pushed"), Result.ok(None))[1],
         )
         with contextlib.redirect_stdout(quiet):
             problems = execute_sync_bodies(
-                [pair], [], force=False, dry_run=False, delay=0,
+                [target], force=False, dry_run=False, delay=0,
             )
         self.assertIn("divergent", quiet.getvalue())
         self.assertEqual(problems, 1)      # refused on the FRESH text
         self.assertEqual(pushes, [])       # nothing mutated
 
-        # Dry runs preview from the snapshot and never fetch.
+        # Dry runs preview from the snapshot, never fetch, and report
+        # planned work as "would push", not as done.
         fetches: list[str] = []
-        pair = (
-            "issue M1-1 (#1)",
-            "Body, reflowed onto one line.",
-            "Body,\nreflowed onto\none line.",
-            lambda: (fetches.append("fetched"), Result.ok(""))[1],
-            lambda: Result.ok(None),
+        target = SyncTarget(
+            label="issue M1-1 (#1)",
+            kind="issue",
+            file_text="Body, reflowed onto one line.",
+            snapshot_text="Body,\nreflowed onto\none line.",
+            fetch=lambda: (fetches.append("fetched"), Result.ok(""))[1],
+            push=lambda: Result.ok(None),
         )
-        with contextlib.redirect_stdout(io.StringIO()):
+        preview = io.StringIO()
+        with contextlib.redirect_stdout(preview):
             problems = execute_sync_bodies(
-                [pair], [], force=False, dry_run=True, delay=0,
+                [target], force=False, dry_run=True, delay=0,
             )
         self.assertEqual(problems, 0)
         self.assertEqual(fetches, [])
+        self.assertIn("1 would push", preview.getvalue())
+        self.assertNotIn("1 pushed,", preview.getvalue())
 
 
 class SyncBodies(FakeGhHarness):
@@ -586,6 +609,29 @@ class SyncBodies(FakeGhHarness):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("would push (reflow)", proc.stdout)
         self.assertEqual(json.dumps(self.issues_on_fake_github()), before)
+
+    def test_empty_body_round_trip_stays_in_sync(self) -> None:
+        # A plan issue with an EMPTY body: populate pushes "", update
+        # mirrors the placeholder into the file, and sync must report
+        # in-sync — not diverge and (under --force) write the
+        # placeholder text into a deliberately empty issue.
+        self.plan_path.write_text(
+            PLAN.replace("Body of M2-1.\n", ""), encoding="utf-8",
+        )
+        self.assertEqual(self.populate().returncode, 0)
+        m21 = next(i for i in self.issues_on_fake_github()
+                   if i["title"].startswith("[M2-1]"))
+        self.assertEqual(m21["body"], "")
+        self.assertEqual(self.update().returncode, 0)
+        self.assertIn("_(no description on GitHub)_",
+                      self.plan_path.read_text(encoding="utf-8"))
+
+        proc = self.populate("--sync-bodies")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("in sync: issue M2-1", proc.stdout)
+        m21 = next(i for i in self.issues_on_fake_github()
+                   if i["title"].startswith("[M2-1]"))
+        self.assertEqual(m21["body"], "")
 
     def test_force_requires_sync_bodies(self) -> None:
         proc = self.populate("--force")

@@ -64,6 +64,7 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 from _gh_project_lib import (  # noqa: E402
+    EMPTY_BODY_PLACEHOLDER,
     GitHubClient,
     Issue,
     ParsedFile,
@@ -160,7 +161,7 @@ def render_issue(issue: Issue) -> str:
         f"**Assignees:** {', '.join('@' + a for a in issue.assignees)}\n\n"
         if issue.assignees else ""
     )
-    body = issue.body.strip() if issue.body else "_(no description on GitHub)_"
+    body = issue.body.strip() if issue.body else EMPTY_BODY_PLACEHOLDER
     body = neutralize_markers(body)
     return (
         f"### Issue {issue.id}: {title} ({ref})\n"
@@ -186,7 +187,7 @@ def render_unplanned_issue(issue: Issue) -> str:
         f"**Assignees:** {', '.join('@' + a for a in issue.assignees)}\n\n"
         if issue.assignees else ""
     )
-    body = issue.body.strip() if issue.body else "_(no description on GitHub)_"
+    body = issue.body.strip() if issue.body else EMPTY_BODY_PLACEHOLDER
     body = neutralize_markers(body)
     title = neutralize_markers(issue.title)
     return (

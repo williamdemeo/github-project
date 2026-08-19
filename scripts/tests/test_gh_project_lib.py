@@ -476,6 +476,37 @@ class ParseJsonPagination(unittest.TestCase):
         self.assertTrue(lib._parse_json('[1] not json', "things").is_err)
 
 
+class ParseObjectField(unittest.TestCase):
+    """Result/error contracts of the single-object field extractor
+    behind get_issue_body / get_milestone_description."""
+
+    def test_string_field(self) -> None:
+        r = lib._parse_object_field('{"body": "text"}', "body", "issue")
+        self.assertEqual(r.unwrap(), "text")
+
+    def test_missing_and_null_fields_are_empty(self) -> None:
+        self.assertEqual(
+            lib._parse_object_field("{}", "body", "issue").unwrap(), "")
+        self.assertEqual(
+            lib._parse_object_field('{"body": null}', "body", "issue").unwrap(),
+            "")
+
+    def test_non_string_field_is_err(self) -> None:
+        r = lib._parse_object_field('{"body": 42}', "body", "issue")
+        self.assertTrue(r.is_err)
+        self.assertIn("to be a string", r.unwrap_err().message)
+
+    def test_non_object_is_err(self) -> None:
+        r = lib._parse_object_field("[1, 2]", "body", "issue")
+        self.assertTrue(r.is_err)
+        self.assertIn("expected a JSON object", r.unwrap_err().message)
+
+    def test_malformed_json_is_err(self) -> None:
+        r = lib._parse_object_field("not json", "body", "issue")
+        self.assertTrue(r.is_err)
+        self.assertIn("failed to decode", r.unwrap_err().message)
+
+
 class ParseIssuesJson(unittest.TestCase):
     """The snapshot parser must keep prefix-less issues and drop PRs."""
 

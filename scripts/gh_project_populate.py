@@ -72,6 +72,8 @@ import re
 import sys
 import textwrap
 import time
+from dataclasses import dataclass
+from typing import Callable
 from pathlib import Path
 
 # Permit `python3 scripts/gh_project_populate.py ...` from the repo root
@@ -82,6 +84,7 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 from _gh_project_lib import (  # noqa: E402
+    EMPTY_BODY_PLACEHOLDER,
     MARKER_IN_BODY_RE,
     neutralize_markers,
     GitHubClient,
@@ -176,8 +179,17 @@ def _normalized(body: str) -> str:
 _HARD_BREAK_RE = re.compile(r"(?:[ ]{2,}|\\)\n")
 
 
-def classify_sync(file_body: str, github_body: str) -> str:
+def classify_sync(
+    file_body: str, github_body: str, *, allow_empty_placeholder: bool = False
+) -> str:
     """How the plan file's body relates to GitHub's, with no stored base.
+
+    With allow_empty_placeholder (issue pairs only), a file body that is
+    exactly update's empty-body sentinel counts as in sync with an empty
+    GitHub body: that text is update's own rendering of "no description",
+    and pushing it would write the placeholder into a deliberately
+    empty issue.  Milestones don't get this rule — a milestone
+    description could legitimately BE that text.
 
     - "in-sync":   identical after CRLF/trailing-whitespace
                    normalization (leading whitespace is meaningful and
@@ -197,6 +209,9 @@ def classify_sync(file_body: str, github_body: str) -> str:
     """
     ours, theirs = _normalized(file_body), _normalized(github_body)
     if ours == theirs:
+        return "in-sync"
+    if allow_empty_placeholder and not theirs \
+            and ours == EMPTY_BODY_PLACEHOLDER:
         return "in-sync"
     # update writes the DEFANGED form of marker-bearing GitHub bodies
     # into the file (neutralize_markers), so a file that is exactly the
@@ -221,9 +236,19 @@ def classify_sync(file_body: str, github_body: str) -> str:
     return "divergent"
 
 
+@dataclass(frozen=True)
+class SyncTarget:
+    """One existing GitHub item --sync-bodies may rewrite."""
+    label: str
+    kind: str                                  # "issue" | "milestone"
+    file_text: str
+    snapshot_text: str
+    fetch: Callable[[], object]                # () -> Result[str, PipelineError]
+    push: Callable[[], object]                 # () -> Result[None, PipelineError]
+
+
 def execute_sync_bodies(
-    issue_pairs: list[tuple],
-    milestone_pairs: list[tuple],
+    targets: list[SyncTarget],
     force: bool,
     dry_run: bool,
     delay: float,
@@ -231,7 +256,6 @@ def execute_sync_bodies(
     """Push plan-file bodies/descriptions to their existing GitHub
     counterparts.  Returns the number of failures + refusals.
 
-    Each pair is (label, file_text, snapshot_text, fetch, push).
     Dry runs classify against the run's snapshot; LIVE runs re-fetch
     each target immediately before mutating and classify against that
     fresh text, so the refuse-on-divergence guarantee also covers edits
@@ -242,46 +266,49 @@ def execute_sync_bodies(
     does not block the reflow-safe ones.
     """
     in_sync = pushed = refused = failed = 0
-    for label, file_text, snapshot_text, fetch, push in (
-            issue_pairs + milestone_pairs):
+    for target in targets:
         if dry_run:
-            github_text = snapshot_text
+            github_text = target.snapshot_text
         else:
-            fresh = fetch()
+            fresh = target.fetch()
             if fresh.is_err:
                 failed += 1
-                print(f"  ! {label}: revalidation failed: "
+                print(f"  ! {target.label}: revalidation failed: "
                       f"{fresh.unwrap_err()}")
                 continue
             github_text = fresh.unwrap()
-        verdict = classify_sync(file_text, github_text)
+        verdict = classify_sync(
+            target.file_text, github_text,
+            allow_empty_placeholder=target.kind == "issue",
+        )
         if verdict == "in-sync":
             in_sync += 1
-            print(f"  = in sync: {label}")
+            print(f"  = in sync: {target.label}")
             continue
         if verdict == "divergent" and not force:
             refused += 1
             print(
-                f"  ! divergent: {label} — content differs beyond line "
-                f"wrapping and no base is stored to tell which side moved; "
-                f"re-run with --force to push the file's version"
+                f"  ! divergent: {target.label} — content differs beyond "
+                f"line wrapping and no base is stored to tell which side "
+                f"moved; re-run with --force to push the file's version"
             )
             continue
         tag = "forced push" if verdict == "divergent" else "reflow"
         if dry_run:
             pushed += 1
-            print(f"  ~ would push ({tag}): {label}")
+            print(f"  ~ would push ({tag}): {target.label}")
             continue
-        result = push()
+        result = target.push()
         if result.is_ok:
             pushed += 1
-            print(f"  ~ pushed ({tag}): {label}")
+            print(f"  ~ pushed ({tag}): {target.label}")
         else:
             failed += 1
-            print(f"  ! {label}: {result.unwrap_err()}")
+            print(f"  ! {target.label}: {result.unwrap_err()}")
         time.sleep(delay)
+    verb = "would push" if dry_run else "pushed"
     print()
-    print(f"  sync: {pushed} pushed, {in_sync} already in sync, "
+    print(f"  sync: {pushed} {verb}, {in_sync} already in sync, "
           f"{refused} divergent (refused), {failed} failed")
     return refused + failed
 
@@ -443,26 +470,28 @@ def run_sync_bodies(
 ) -> int:
     """The --sync-bodies mode: push file bodies to EXISTING GitHub
     counterparts; never creates anything (issue #7)."""
-    issue_pairs = [
-        (
-            f"issue {desired.id} (#{live.gh_number})",
-            desired.body,
-            live.body,
-            lambda n=live.gh_number: client.get_issue_body(n),
-            lambda n=live.gh_number, b=desired.body:
+    issue_targets = [
+        SyncTarget(
+            label=f"issue {desired.id} (#{live.gh_number})",
+            kind="issue",
+            file_text=desired.body,
+            snapshot_text=live.body,
+            fetch=lambda n=live.gh_number: client.get_issue_body(n),
+            push=lambda n=live.gh_number, b=desired.body:
                 client.update_issue_body(n, b),
         )
         for desired, live in issue_plan.existing
         if live.gh_number is not None
     ]
     live_desc = {m.gh_number: m.description for m in snapshot.milestones}
-    milestone_pairs = [
-        (
-            f"milestone {ms.title} (#{ms.gh_number})",
-            ms.description,
-            live_desc.get(ms.gh_number, ""),
-            lambda n=ms.gh_number: client.get_milestone_description(n),
-            lambda n=ms.gh_number, d=ms.description:
+    milestone_targets = [
+        SyncTarget(
+            label=f"milestone {ms.title} (#{ms.gh_number})",
+            kind="milestone",
+            file_text=ms.description,
+            snapshot_text=live_desc.get(ms.gh_number, ""),
+            fetch=lambda n=ms.gh_number: client.get_milestone_description(n),
+            push=lambda n=ms.gh_number, d=ms.description:
                 client.update_milestone_description(n, d),
         )
         for ms in milestone_plan.existing
@@ -473,20 +502,21 @@ def run_sync_bodies(
         "SYNCING BODIES (file → GitHub, existing items only)"
         + ("  [dry run]" if args.dry_run else "")
     )
-    if not issue_pairs and not milestone_pairs:
+    targets = issue_targets + milestone_targets
+    if not targets:
         print("  nothing to sync: no plan issue or milestone exists on "
               "GitHub yet")
-    if not args.dry_run and (issue_pairs or milestone_pairs) and not args.yes:
-        print(f"This may rewrite up to {len(issue_pairs)} issue bodies "
-              f"and {len(milestone_pairs)} milestone descriptions on GitHub.")
+    if not args.dry_run and targets and not args.yes:
+        print(f"This may rewrite up to {len(issue_targets)} issue bodies "
+              f"and {len(milestone_targets)} milestone descriptions on "
+              f"GitHub.")
         response = input("Continue? [y/N] ").strip().lower()
         if response not in ("y", "yes"):
             print("Aborted.")
             return 0
 
     problems = execute_sync_bodies(
-        issue_pairs, milestone_pairs,
-        force=args.force, dry_run=args.dry_run, delay=args.delay,
+        targets, force=args.force, dry_run=args.dry_run, delay=args.delay,
     )
     if issue_plan.to_create:
         print(
