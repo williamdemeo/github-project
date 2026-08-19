@@ -67,6 +67,7 @@ from _gh_project_lib import (  # noqa: E402
     GitHubClient,
     Issue,
     ParsedFile,
+    neutralize_markers,
     parse_file,
     parse_repository,
 )
@@ -133,19 +134,6 @@ def group_unplanned(
 # ── Region rendering ─────────────────────────────────────────────────────────
 
 _ID_PREFIX_RE = re.compile(r"^\[M\d+-\d+[a-z]?\]\s+(.+)$")
-
-# A live GitHub body may contain anything — including text shaped like
-# this file's own region markers.  Rendered verbatim, such a line would
-# close (or open) a region on the next parse and corrupt the file, so
-# the comment-opening form is defanged before insertion.  The escape is
-# deterministic, keeping `--check` stable across repeated renders.
-_MARKER_IN_BODY_RE = re.compile(r"<!--(\s*)(BEGIN|END) GENERATED:")
-
-
-def neutralize_markers(body: str) -> str:
-    """Defang region-marker look-alikes inside a live issue body."""
-    return _MARKER_IN_BODY_RE.sub(r"<!--\1\2 GENERATED (escaped):", body)
-
 
 def strip_id_prefix(title: str) -> str:
     """Drop the leading `[MN-k]` from an issue title; the heading reproduces

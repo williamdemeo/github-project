@@ -464,6 +464,22 @@ def record_issue_number(text: str, issue_id: str, gh_number: int) -> tuple[str, 
     return "".join(out), found
 
 
+# ── Marker neutralization (shared by update's renderer and populate's
+#    --sync-bodies classifier) ────────────────────────────────────────────────
+
+# A live GitHub body/title may contain anything — including text shaped
+# like this file's own region markers.  Rendered verbatim, such a line
+# would close (or open) a region on the next parse and corrupt the
+# file, so the comment-opening form is defanged before insertion.  The
+# escape is deterministic, keeping `--check` stable across renders.
+MARKER_IN_BODY_RE = re.compile(r"<!--(\s*)(BEGIN|END) GENERATED:")
+
+
+def neutralize_markers(body: str) -> str:
+    """Defang region-marker look-alikes inside live GitHub content."""
+    return MARKER_IN_BODY_RE.sub(r"<!--\1\2 GENERATED (escaped):", body)
+
+
 # ── Generated-region parsing (used by update and lint) ─────────────────────
 
 BEGIN_RE = re.compile(r"<!--\s*BEGIN GENERATED:\s*([\w-]+)\s*-->")

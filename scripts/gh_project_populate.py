@@ -82,6 +82,8 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 from _gh_project_lib import (  # noqa: E402
+    MARKER_IN_BODY_RE,
+    neutralize_markers,
     GitHubClient,
     IssuePlan,
     LabelPlan,
@@ -196,7 +198,19 @@ def classify_sync(file_body: str, github_body: str) -> str:
     ours, theirs = _normalized(file_body), _normalized(github_body)
     if ours == theirs:
         return "in-sync"
+    # update writes the DEFANGED form of marker-bearing GitHub bodies
+    # into the file (neutralize_markers), so a file that is exactly the
+    # escaped mirror of GitHub is in sync — pushing it would replace the
+    # real body with our escape artifacts.
+    if ours == neutralize_markers(theirs):
+        return "in-sync"
     if _HARD_BREAK_RE.search(theirs):
+        return "divergent"
+    # Raw region-marker text on the GitHub side gets no reflow shortcut
+    # either: the file can only ever hold the escaped form, so any push
+    # would send escape artifacts upstream.  --force remains true
+    # last-writer-wins, escapes included.
+    if MARKER_IN_BODY_RE.search(theirs):
         return "divergent"
     # File-side hard breaks are defanged for the EQUIVALENCE test only:
     # the two-space form vanishes under unwrap's rstrip anyway, but the
@@ -208,7 +222,6 @@ def classify_sync(file_body: str, github_body: str) -> str:
 
 
 def execute_sync_bodies(
-    client: GitHubClient,
     issue_pairs: list[tuple],
     milestone_pairs: list[tuple],
     force: bool,
@@ -464,15 +477,15 @@ def run_sync_bodies(
         print("  nothing to sync: no plan issue or milestone exists on "
               "GitHub yet")
     if not args.dry_run and (issue_pairs or milestone_pairs) and not args.yes:
-        print(f"This may rewrite {len(issue_pairs)} issue bodies and "
-              f"{len(milestone_pairs)} milestone descriptions on GitHub.")
+        print(f"This may rewrite up to {len(issue_pairs)} issue bodies "
+              f"and {len(milestone_pairs)} milestone descriptions on GitHub.")
         response = input("Continue? [y/N] ").strip().lower()
         if response not in ("y", "yes"):
             print("Aborted.")
             return 0
 
     problems = execute_sync_bodies(
-        client, issue_pairs, milestone_pairs,
+        issue_pairs, milestone_pairs,
         force=args.force, dry_run=args.dry_run, delay=args.delay,
     )
     if issue_plan.to_create:
@@ -542,6 +555,9 @@ def main() -> int:
     args = build_parser().parse_args()
     if args.no_env_prefix:
         args.env_prefix = False
+    if args.force and not args.sync_bodies:
+        print("error: --force only applies to --sync-bodies", file=sys.stderr)
+        return 2
 
     do_labels = not args.issues_only and not args.milestones_only and not args.skip_labels
     do_milestones = not args.issues_only and not args.labels_only

@@ -459,6 +459,23 @@ class SyncBodiesClassification(unittest.TestCase):
         self.assertEqual(self.classify("a  \nb", "a\nb"), "reflow")
         self.assertEqual(self.classify("a\\\nb", "a\nb"), "reflow")
 
+    def test_escaped_mirror_of_marker_bearing_body_is_in_sync(self) -> None:
+        # update writes the DEFANGED form of marker-bearing GitHub
+        # bodies into the file; that mirror must classify in-sync, or
+        # every such issue diverges forever and --force would push our
+        # escape artifacts upstream.
+        github = "See <!-- END GENERATED: milestone-1 --> markers."
+        file_mirror = "See <!-- END GENERATED (escaped): milestone-1 --> markers."
+        self.assertEqual(self.classify(file_mirror, github), "in-sync")
+
+    def test_raw_markers_on_github_get_no_reflow_shortcut(self) -> None:
+        # Wrapping-equivalent, but GitHub carries raw marker text the
+        # file can only hold escaped: any push would send escapes
+        # upstream, so it must demand --force.
+        github = "About\n<!-- BEGIN GENERATED: x --> markers\nhere."
+        file_side = "About <!-- BEGIN GENERATED (escaped): x --> markers here."
+        self.assertEqual(self.classify(file_side, github), "divergent")
+
     def test_live_runs_classify_against_revalidated_text(self) -> None:
         # The refuse-on-divergence guarantee must cover edits made
         # after the snapshot (e.g. while the confirmation prompt sat
@@ -480,7 +497,7 @@ class SyncBodiesClassification(unittest.TestCase):
         )
         with contextlib.redirect_stdout(quiet):
             problems = execute_sync_bodies(
-                None, [pair], [], force=False, dry_run=False, delay=0,
+                [pair], [], force=False, dry_run=False, delay=0,
             )
         self.assertIn("divergent", quiet.getvalue())
         self.assertEqual(problems, 1)      # refused on the FRESH text
@@ -497,7 +514,7 @@ class SyncBodiesClassification(unittest.TestCase):
         )
         with contextlib.redirect_stdout(io.StringIO()):
             problems = execute_sync_bodies(
-                None, [pair], [], force=False, dry_run=True, delay=0,
+                [pair], [], force=False, dry_run=True, delay=0,
             )
         self.assertEqual(problems, 0)
         self.assertEqual(fetches, [])
@@ -569,6 +586,34 @@ class SyncBodies(FakeGhHarness):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("would push (reflow)", proc.stdout)
         self.assertEqual(json.dumps(self.issues_on_fake_github()), before)
+
+    def test_force_requires_sync_bodies(self) -> None:
+        proc = self.populate("--force")
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn("--force only applies to --sync-bodies", proc.stderr)
+
+    def test_marker_bearing_body_round_trip_stays_in_sync(self) -> None:
+        # An authored plan cannot carry raw marker text (lint forbids
+        # it — the file grammar owns those), so the realistic path is a
+        # GitHub-side edit: someone writes marker-like text into a live
+        # body, update mirrors it back DEFANGED, and sync must then
+        # report in-sync rather than divergent-forever.
+        self.assertEqual(self.populate().returncode, 0)
+        issues = self.issues_on_fake_github()
+        target = next(i for i in issues if i["title"].startswith("[M1-1]"))
+        target["body"] = "Body with <!-- END GENERATED: milestone-9 --> inline."
+        (self.state / "issues.json").write_text(json.dumps(issues))
+        self.assertEqual(self.update().returncode, 0)
+        self.assertIn("END GENERATED (escaped): milestone-9",
+                      self.plan_path.read_text(encoding="utf-8"))
+
+        proc = self.populate("--sync-bodies")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("in sync: issue M1-1", proc.stdout)
+        self.assertIn("0 pushed", proc.stdout)
+        # GitHub's raw marker text was not replaced by escape artifacts.
+        self.assertIn("<!-- END GENERATED: milestone-9 -->",
+                      self.m11()["body"])
 
     def test_sync_never_creates(self) -> None:
         proc = self.populate("--sync-bodies")
