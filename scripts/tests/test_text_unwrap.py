@@ -85,6 +85,21 @@ CASES: tuple[tuple[str, str, str], ...] = (
         "Prose here.\n\n\tcode one\n\tcode two\n",
     ),
     (
+        "a bare # is an empty heading, not a prose prefix",
+        "#\nbody\ntext.\n\n##\nmore.\n",
+        "#\nbody text.\n\n##\nmore.\n",
+    ),
+    (
+        "empty list items stay empty",
+        "*\nfollowing\npara.\n\n1.\nnumbered\nfollows.\n\n+\nplus too.\n",
+        "*\nfollowing para.\n\n1.\nnumbered follows.\n\n+\nplus too.\n",
+    ),
+    (
+        "list second paragraph is conservatively preserved (documented)",
+        "- item one\n\n    second paragraph\n    of the item.\n",
+        "- item one\n\n    second paragraph\n    of the item.\n",
+    ),
+    (
         "valueless bold metadata never absorbs its following prose",
         "**Description:**\nBuild the\ncore.\n\n**Exit criterion:**\nCore\nworks.\n",
         "**Description:**\nBuild the core.\n\n**Exit criterion:**\nCore works.\n",

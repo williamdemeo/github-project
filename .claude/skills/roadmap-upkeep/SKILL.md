@@ -28,7 +28,7 @@ surrounding prose.  Two commands, two directions:
   Hand-written prose outside the markers is preserved byte-for-byte.
   Commit the result.
 
-A freshly populated plan's FIRST `update --check` is always stale —
+A freshly populated plan's FIRST `make update-check` is always stale —
 update's canonical rendering differs cosmetically from authored input
 (no `**Milestone:**` lines, labels in GitHub's order, no trailing
 `---`).  Run one plain `make update`, commit it as the normalization,

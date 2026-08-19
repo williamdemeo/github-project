@@ -520,8 +520,15 @@ def main() -> int:
             f"{issue_failed} failed or skipped, "
             f"{not_attempted} not attempted"
         )
-        if issues_created:
-            # A fresh plan's first `update --check` is ALWAYS stale:
+        if issues_created and not issue_failed:
+            # Only after a FULLY successful run: after a partial
+            # failure this advice would be wrong twice over — the file
+            # does not yet record every number, and normalizing via
+            # update from incomplete GitHub state would drop the
+            # not-yet-created issue definitions from the plan.  Failed
+            # runs keep the per-issue rerun guidance printed above.
+            #
+            # A fresh plan's first `make update-check` is ALWAYS stale:
             # update's canonical rendering drops the **Milestone:**
             # lines, reorders labels to GitHub's order, and trims the
             # trailing --- separators.  Point at the normalization run
@@ -529,11 +536,11 @@ def main() -> int:
             print()
             print("Next steps:")
             print("  1. commit this file (it now records the issue numbers)")
-            print("  2. run a plain `update` once and commit the result — it")
-            print("     normalizes the generated regions to the engine's")
-            print("     canonical rendering (the first `update --check` on a")
-            print("     fresh plan is ALWAYS stale otherwise)")
-            print("  3. from then on, `update --check` is the drift gate")
+            print("  2. run a plain `make update` once and commit the result —")
+            print("     it normalizes the generated regions to the engine's")
+            print("     canonical rendering (the first `make update-check` on")
+            print("     a fresh plan is ALWAYS stale otherwise)")
+            print("  3. from then on, `make update-check` is the drift gate")
 
     if collisions:
         print(f"note: {collisions} label collision(s) were skipped — "

@@ -25,6 +25,13 @@ Description:
   spaces (the two-spaces-after-a-period prose style); any other break
   becomes one space.  `unwrap` is a total function and idempotent.
 
+  Known conservative limitation: a list item's SECOND paragraph
+  (four-space-indented prose after a blank line inside the item) is
+  indistinguishable from an indented code block without tracking list
+  context across blank lines, so it is preserved as-is rather than
+  reflowed.  The error is in the safe direction — an unremoved break,
+  never a changed rendering.
+
 Design Principles:
   - Pure: a single str -> str transform; no I/O (callers use
     file_ops), no exceptions on any input.
@@ -39,7 +46,12 @@ import re
 
 FENCE_RE = re.compile(r"^(\s*)(`{3,}|~{3,})")
 LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d{1,9}[.)])\s+\S")
-HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s")
+# A bare marker (`*`, `+`, `1.`) is a valid EMPTY list item; joining
+# the next line onto it would move that paragraph into the item.
+EMPTY_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d{1,9}[.)])\s*$")
+# `(?:\s|$)`: a bare `#` line is a valid EMPTY heading; requiring
+# trailing whitespace would join the next paragraph into it.
+HEADING_RE = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
 # Setext underlines: ANY run of = or - alone on a line (one character
 # suffices in CommonMark); joining one into prose would destroy the
 # heading above it.
@@ -73,6 +85,7 @@ def is_structural(line: str) -> bool:
         or SETEXT_RE.match(line)
         or THEMATIC_RE.match(line)
         or BOLD_META_RE.match(line)
+        or EMPTY_LIST_ITEM_RE.match(line)
         or "|" in line
         or stripped.startswith((">", "<!--", "-->"))
     )

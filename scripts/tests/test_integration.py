@@ -383,12 +383,26 @@ class LineBreakHandling(FakeGhHarness):
         self.assertIn("Line breaks: preserved as authored", proc.stdout)
         self.assertTrue(self.created_m11_body().startswith(self.WRAPPED_BODY))
 
-    def test_next_steps_hint_only_after_real_creations(self) -> None:
+    HINT = "fresh plan is ALWAYS stale otherwise"
+
+    def test_next_steps_hint_only_after_fully_successful_runs(self) -> None:
         first = self.populate()
-        self.assertIn("first `update --check` on a", first.stdout)
+        self.assertIn(self.HINT, first.stdout)
+        self.assertIn("`make update`", first.stdout)
+        self.assertIn("`make update-check`", first.stdout)
         rerun = self.populate()
         self.assertEqual(rerun.returncode, 0, rerun.stderr)
-        self.assertNotIn("first `update --check` on a", rerun.stdout)
+        self.assertNotIn(self.HINT, rerun.stdout)
+
+    def test_no_hint_after_a_partial_failure(self) -> None:
+        # Normalizing via update from incomplete GitHub state would drop
+        # the not-yet-created issue definitions from the plan file, so
+        # a partially failed run must not point users there.
+        (self.state / "fail_create_issue_at").write_text("2")
+        proc = self.populate()
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertGreater(len(self.issues_on_fake_github()), 0)
+        self.assertNotIn(self.HINT, proc.stdout)
 
 
 class OrganicIssues(FakeGhHarness):

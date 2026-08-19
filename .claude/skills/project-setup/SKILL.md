@@ -49,8 +49,8 @@ to GitHub.
    This is a required normalization, not optional polish: update's
    canonical rendering drops `**Milestone:**` lines, reorders labels to
    GitHub's order, and trims trailing `---`, so the first
-   `update --check` on a freshly populated plan is ALWAYS stale until
-   this run lands.  populate prints this sequence as its next-steps
+   `make update-check` on a freshly populated plan is ALWAYS stale
+   until this run lands.  populate prints this sequence as its next-steps
    hint.  (populate also strips hard line breaks from prose by default
    so GitHub soft-wraps it — `--keep-line-breaks` opts out.)
 
