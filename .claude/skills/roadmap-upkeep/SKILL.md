@@ -28,6 +28,12 @@ surrounding prose.  Two commands, two directions:
   Hand-written prose outside the markers is preserved byte-for-byte.
   Commit the result.
 
+A freshly populated plan's FIRST `make update-check` is always stale —
+update's canonical rendering differs cosmetically from authored input
+(no `**Milestone:**` lines, labels in GitHub's order, no trailing
+`---`).  Run one plain `make update`, commit it as the normalization,
+and only then treat `update-check` failures as drift.
+
 ## Adding work to a live project
 
 1. New issue in an existing milestone: add a

@@ -41,6 +41,9 @@ Options:
   --issues-only      Only create issues (milestones must already exist)
   --skip-labels      Skip label creation
   --start-from ID    Create only issues with ID >= this (e.g. M1-3)
+  --keep-line-breaks Push bodies exactly as authored; by default hard
+                     line breaks in prose are stripped so GitHub
+                     soft-wraps it
   --delay SECONDS    Pause between mutating calls (default: 1.0)
   --yes              Skip the interactive confirmation
   --env-prefix       Prefix gh with `env -u GH_TOKEN -u GITHUB_TOKEN`
@@ -86,6 +89,7 @@ from _gh_project_lib import (  # noqa: E402
     record_issue_number,
 )
 from _utils.file_ops import read_text, write_text  # noqa: E402
+from _utils.text_unwrap import unwrap  # noqa: E402
 
 
 # ── Plan reporting (shared verbatim by dry-run and live runs) ───────────────
@@ -323,6 +327,10 @@ def build_parser() -> argparse.ArgumentParser:
     stage.add_argument("--labels-only", action="store_true")
     stage.add_argument("--issues-only", action="store_true")
     parser.add_argument("--skip-labels", action="store_true")
+    parser.add_argument("--keep-line-breaks", action="store_true",
+                        help="push bodies exactly as authored; by default "
+                             "hard line breaks in prose are stripped so "
+                             "GitHub soft-wraps it")
     parser.add_argument("--start-from", type=str, default=None,
                         help="Create only issues with ID >= this (e.g. M1-3)")
     parser.add_argument("--delay", type=float, default=1.0,
@@ -360,7 +368,23 @@ def main() -> int:
         print("error: fix the plan file before populating", file=sys.stderr)
         return 2
 
-    plan: ProjectPlan = parse_project_plan(text)
+    # By default, prose is unwrapped before parsing so pushed issue
+    # bodies and milestone descriptions reach GitHub without authored
+    # hard line breaks (GitHub soft-wraps).  The transform is
+    # structure-preserving — the plan parses identically, only bodies
+    # and descriptions reflow (pinned by test_text_unwrap) — and the
+    # file on disk is never rewritten by it: the (#N) write-back still
+    # edits the authored text, and the post-populate `update` run is
+    # what lands normalized content in the file.
+    if args.keep_line_breaks:
+        effective = text
+        print("Line breaks: preserved as authored (--keep-line-breaks)")
+    else:
+        effective = unwrap(text)
+        print("Line breaks: stripped from prose before pushing "
+              "(use --keep-line-breaks to preserve)")
+
+    plan: ProjectPlan = parse_project_plan(effective)
     repo = args.repo or plan.repository
     if repo is None:
         print(
@@ -496,6 +520,27 @@ def main() -> int:
             f"{issue_failed} failed or skipped, "
             f"{not_attempted} not attempted"
         )
+        if issues_created and not issue_failed:
+            # Only after a FULLY successful run: after a partial
+            # failure this advice would be wrong twice over — the file
+            # does not yet record every number, and normalizing via
+            # update from incomplete GitHub state would drop the
+            # not-yet-created issue definitions from the plan.  Failed
+            # runs keep the per-issue rerun guidance printed above.
+            #
+            # A fresh plan's first `make update-check` is ALWAYS stale:
+            # update's canonical rendering drops the **Milestone:**
+            # lines, reorders labels to GitHub's order, and trims the
+            # trailing --- separators.  Point at the normalization run
+            # so that first failure is not read as a bug.
+            print()
+            print("Next steps:")
+            print("  1. commit this file (it now records the issue numbers)")
+            print("  2. run a plain `make update` once and commit the result —")
+            print("     it normalizes the generated regions to the engine's")
+            print("     canonical rendering (the first `make update-check` on")
+            print("     a fresh plan is ALWAYS stale otherwise)")
+            print("  3. from then on, `make update-check` is the drift gate")
 
     if collisions:
         print(f"note: {collisions} label collision(s) were skipped — "

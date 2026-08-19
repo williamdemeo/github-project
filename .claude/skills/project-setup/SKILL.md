@@ -45,8 +45,14 @@ to GitHub.
    creating; use `python3 scripts/gh_project_populate.py docs/GITHUB_PROJECT.md --yes`
    for non-interactive runs).  Issue numbers are written back into the
    headings as `(#N)` suffixes as each issue is created.
-5. **Canonicalize**: `make update` — rewrites the generated regions from
-   GitHub so the file and GitHub agree exactly from day one.
+5. **Canonicalize**: run a plain `make update` once and commit it.
+   This is a required normalization, not optional polish: update's
+   canonical rendering drops `**Milestone:**` lines, reorders labels to
+   GitHub's order, and trims trailing `---`, so the first
+   `make update-check` on a freshly populated plan is ALWAYS stale
+   until this run lands.  populate prints this sequence as its next-steps
+   hint.  (populate also strips hard line breaks from prose by default
+   so GitHub soft-wraps it — `--keep-line-breaks` opts out.)
 
 ## Safety properties you can rely on
 
