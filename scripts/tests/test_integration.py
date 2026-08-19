@@ -433,6 +433,28 @@ class SyncBodiesClassification(unittest.TestCase):
             "divergent",
         )
 
+    def test_leading_indentation_is_meaningful(self) -> None:
+        # A four-space-indented first line on GitHub is a code block;
+        # eating it made different bodies compare in-sync — and in-sync
+        # short-circuits even --force.
+        self.assertEqual(self.classify("code\nrest.", "    code\nrest."),
+                         "divergent")
+        self.assertEqual(self.classify("    code\nrest.", "    code\nrest."),
+                         "in-sync")
+
+    def test_github_side_hard_breaks_are_divergent(self) -> None:
+        # `a  \nb` renders a <br>; unwrap() would erase it, so reflow
+        # must not silently overwrite it (two-space and backslash forms).
+        self.assertEqual(self.classify("a b", "a  \nb"), "divergent")
+        self.assertEqual(self.classify("a b", "a\\\nb"), "divergent")
+        # Identical bodies with hard breaks are still just in-sync.
+        self.assertEqual(self.classify("a  \nb", "a  \nb"), "in-sync")
+
+    def test_file_side_hard_breaks_still_reflow(self) -> None:
+        # The push carries the file's hard break to GitHub intact —
+        # nothing GitHub-side is lost, so no --force is demanded.
+        self.assertEqual(self.classify("a  \nb", "a\nb"), "reflow")
+
 
 class SyncBodies(FakeGhHarness):
     """--sync-bodies end to end: reflow pushes, divergence refuses

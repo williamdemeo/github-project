@@ -68,6 +68,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import textwrap
 import time
@@ -158,27 +159,45 @@ def issue_blocker(
 
 
 def _normalized(body: str) -> str:
-    """Comparison form: GitHub stores web edits with CRLF, and trailing
-    whitespace is never meaningful."""
-    return body.replace("\r\n", "\n").strip()
+    """Comparison form: GitHub stores web edits with CRLF, and TRAILING
+    whitespace is never meaningful.  Leading whitespace stays — a
+    four-space-indented first line is a code block, and eating it would
+    make genuinely different bodies compare equal (and in-sync
+    short-circuits even --force)."""
+    return body.replace("\r\n", "\n").rstrip()
+
+
+# Markdown hard breaks: two+ trailing spaces, or a backslash, before a
+# newline.  unwrap() deliberately removes them, so they are invisible
+# to the reflow equivalence — but on the GitHub side they are intended
+# rendering (<br>) that a push would destroy.
+_HARD_BREAK_RE = re.compile(r"(?:[ ]{2,}|\\)\n")
 
 
 def classify_sync(file_body: str, github_body: str) -> str:
     """How the plan file's body relates to GitHub's, with no stored base.
 
-    - "in-sync":   identical after CRLF/trailing-whitespace normalization.
+    - "in-sync":   identical after CRLF/trailing-whitespace
+                   normalization (leading whitespace is meaningful and
+                   preserved).
     - "reflow":    identical after unwrap() of both sides — the content
                    matches and only line wrapping differs, so pushing
-                   cannot lose anyone's words.  This is the case
-                   --sync-bodies exists for.
-    - "divergent": the content itself differs.  The engine stores no
-                   base version, so it cannot tell which side moved —
-                   refused by default; --force pushes the file's
-                   version (last writer wins).
+                   loses neither words nor GitHub-side formatting.  This
+                   is the case --sync-bodies exists for.
+    - "divergent": the content differs, or GitHub's body carries
+                   explicit hard-break syntax (trailing double-space or
+                   backslash before a newline) that reflow would
+                   silently destroy.  The engine stores no base version,
+                   so it cannot tell which side moved — refused by
+                   default; --force pushes the file's version (last
+                   writer wins).  Hard breaks on the FILE side alone do
+                   not diverge: the push carries them to GitHub intact.
     """
     ours, theirs = _normalized(file_body), _normalized(github_body)
     if ours == theirs:
         return "in-sync"
+    if _HARD_BREAK_RE.search(theirs):
+        return "divergent"
     if unwrap(ours) == unwrap(theirs):
         return "reflow"
     return "divergent"
