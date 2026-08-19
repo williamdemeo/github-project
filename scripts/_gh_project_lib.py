@@ -984,6 +984,25 @@ class GitHubClient:
             "-f", f"description={ms.description}",
         ).and_then(_parse_milestone_create_response).map(ms.with_gh_number)
 
+    def get_issue_body(self, gh_number: int) -> Result[str, PipelineError]:
+        """Fetch ONE issue's current body — the revalidation read
+        --sync-bodies performs immediately before each mutation, so the
+        divergence verdict covers edits made after the run's snapshot
+        (e.g. while the confirmation prompt sat open)."""
+        return self._run(
+            "api", f"repos/{self.repo}/issues/{gh_number}", "-X", "GET",
+        ).and_then(lambda out: _parse_object_field(out, "body", "issue"))
+
+    def get_milestone_description(
+        self, gh_number: int
+    ) -> Result[str, PipelineError]:
+        """Fetch ONE milestone's current description (see get_issue_body)."""
+        return self._run(
+            "api", f"repos/{self.repo}/milestones/{gh_number}", "-X", "GET",
+        ).and_then(
+            lambda out: _parse_object_field(out, "description", "milestone")
+        )
+
     def update_issue_body(
         self, gh_number: int, body: str
     ) -> Result[None, PipelineError]:
@@ -1148,6 +1167,27 @@ def _parse_json(stdout: str, kind: str) -> Result[list[dict], PipelineError]:
             ))
         items.extend(data)
     return Result.ok(items)
+
+
+def _parse_object_field(
+    stdout: str, field: str, kind: str
+) -> Result[str, PipelineError]:
+    """Extract one string field from a single-object `gh api` response."""
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        return Result.err(PipelineError(
+            error_type=ErrorType.PARSING_ERROR,
+            message=f"failed to decode {kind} JSON from `gh`",
+            cause=e,
+            context={"stdout_preview": stdout[:500]},
+        ))
+    if not isinstance(data, dict):
+        return Result.err(PipelineError(
+            error_type=ErrorType.PARSING_ERROR,
+            message=f"expected a JSON object for {kind}, got {type(data).__name__}",
+        ))
+    return Result.ok(data.get(field) or "")
 
 
 def _parse_milestone_create_response(stdout: str) -> Result[int, PipelineError]:

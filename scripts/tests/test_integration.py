@@ -453,7 +453,54 @@ class SyncBodiesClassification(unittest.TestCase):
     def test_file_side_hard_breaks_still_reflow(self) -> None:
         # The push carries the file's hard break to GitHub intact —
         # nothing GitHub-side is lost, so no --force is demanded.
+        # Both markdown forms: trailing double-space AND backslash (the
+        # backslash survives unwrap's join, so it needs explicit
+        # defanging in the equivalence comparison).
         self.assertEqual(self.classify("a  \nb", "a\nb"), "reflow")
+        self.assertEqual(self.classify("a\\\nb", "a\nb"), "reflow")
+
+    def test_live_runs_classify_against_revalidated_text(self) -> None:
+        # The refuse-on-divergence guarantee must cover edits made
+        # after the snapshot (e.g. while the confirmation prompt sat
+        # open): the executor re-fetches each target immediately before
+        # mutating and classifies against THAT.
+        import contextlib
+        import io
+        from gh_project_populate import execute_sync_bodies
+        from _utils import Result
+
+        quiet = io.StringIO()
+        pushes: list[str] = []
+        pair = (
+            "issue M1-1 (#1)",
+            "Body, reflowed onto one line.",
+            "Body,\nreflowed onto\none line.",          # snapshot: reflow-safe
+            lambda: Result.ok("Edited on GitHub meanwhile."),  # fresh: divergent
+            lambda: (pushes.append("pushed"), Result.ok(None))[1],
+        )
+        with contextlib.redirect_stdout(quiet):
+            problems = execute_sync_bodies(
+                None, [pair], [], force=False, dry_run=False, delay=0,
+            )
+        self.assertIn("divergent", quiet.getvalue())
+        self.assertEqual(problems, 1)      # refused on the FRESH text
+        self.assertEqual(pushes, [])       # nothing mutated
+
+        # Dry runs preview from the snapshot and never fetch.
+        fetches: list[str] = []
+        pair = (
+            "issue M1-1 (#1)",
+            "Body, reflowed onto one line.",
+            "Body,\nreflowed onto\none line.",
+            lambda: (fetches.append("fetched"), Result.ok(""))[1],
+            lambda: Result.ok(None),
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            problems = execute_sync_bodies(
+                None, [pair], [], force=False, dry_run=True, delay=0,
+            )
+        self.assertEqual(problems, 0)
+        self.assertEqual(fetches, [])
 
 
 class SyncBodies(FakeGhHarness):

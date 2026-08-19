@@ -198,7 +198,11 @@ def classify_sync(file_body: str, github_body: str) -> str:
         return "in-sync"
     if _HARD_BREAK_RE.search(theirs):
         return "divergent"
-    if unwrap(ours) == unwrap(theirs):
+    # File-side hard breaks are defanged for the EQUIVALENCE test only:
+    # the two-space form vanishes under unwrap's rstrip anyway, but the
+    # backslash form would survive the join ("a\\ b") and spuriously
+    # demand --force for a push that preserves the break verbatim.
+    if unwrap(_HARD_BREAK_RE.sub("\n", ours)) == unwrap(theirs):
         return "reflow"
     return "divergent"
 
@@ -214,13 +218,29 @@ def execute_sync_bodies(
     """Push plan-file bodies/descriptions to their existing GitHub
     counterparts.  Returns the number of failures + refusals.
 
-    Each pair is (label, file_text, github_text, push_callable).  Every
-    item is classified before anything mutates, dry-run prints exactly
-    the live plan, and refusals are per-item — one divergent body does
-    not block the reflow-safe ones.
+    Each pair is (label, file_text, snapshot_text, fetch, push).
+    Dry runs classify against the run's snapshot; LIVE runs re-fetch
+    each target immediately before mutating and classify against that
+    fresh text, so the refuse-on-divergence guarantee also covers edits
+    made after the snapshot — e.g. while the confirmation prompt sat
+    open.  (GitHub's API has no conditional issue update, so a
+    milliseconds-wide window remains; the revalidation shrinks it from
+    prompt-sized to that.)  Refusals are per-item — one divergent body
+    does not block the reflow-safe ones.
     """
     in_sync = pushed = refused = failed = 0
-    for label, file_text, github_text, push in issue_pairs + milestone_pairs:
+    for label, file_text, snapshot_text, fetch, push in (
+            issue_pairs + milestone_pairs):
+        if dry_run:
+            github_text = snapshot_text
+        else:
+            fresh = fetch()
+            if fresh.is_err:
+                failed += 1
+                print(f"  ! {label}: revalidation failed: "
+                      f"{fresh.unwrap_err()}")
+                continue
+            github_text = fresh.unwrap()
         verdict = classify_sync(file_text, github_text)
         if verdict == "in-sync":
             in_sync += 1
@@ -415,6 +435,7 @@ def run_sync_bodies(
             f"issue {desired.id} (#{live.gh_number})",
             desired.body,
             live.body,
+            lambda n=live.gh_number: client.get_issue_body(n),
             lambda n=live.gh_number, b=desired.body:
                 client.update_issue_body(n, b),
         )
@@ -427,6 +448,7 @@ def run_sync_bodies(
             f"milestone {ms.title} (#{ms.gh_number})",
             ms.description,
             live_desc.get(ms.gh_number, ""),
+            lambda n=ms.gh_number: client.get_milestone_description(n),
             lambda n=ms.gh_number, d=ms.description:
                 client.update_milestone_description(n, d),
         )

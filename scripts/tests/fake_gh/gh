@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -82,6 +83,14 @@ def main() -> int:
         save("labels.json", labels)
         return 0
 
+    if args[0] == "api" and re.search(r"/milestones/\d+$", args[1]) \
+            and "PATCH" not in flag_values(args, "-X"):
+        number = int(args[1].rsplit("/", 1)[1])
+        milestones = load("milestones.json", [])
+        print(json.dumps(next(m for m in milestones
+                               if m["number"] == number)))
+        return 0
+
     if args[0] == "api" and "milestones" in args[1]:
         if "PATCH" in flag_values(args, "-X"):
             number = int(args[1].rsplit("/", 1)[1])
@@ -111,6 +120,12 @@ def main() -> int:
 
     if args[0] == "api" and args[1].endswith("/issues"):
         print(json.dumps(load("issues.json", [])))
+        return 0
+
+    if args[0] == "api" and re.search(r"/issues/\d+$", args[1]):
+        number = int(args[1].rsplit("/", 1)[1])
+        issues = load("issues.json", [])
+        print(json.dumps(next(i for i in issues if i["number"] == number)))
         return 0
 
     if args[:2] == ["issue", "edit"]:
