@@ -123,6 +123,28 @@ that.)
 
 `make help` lists every target.
 
+## Command reference (short form)
+
+Full man-page-style documentation — every option, exit codes, the
+`--sync-bodies` classification rules, and how to unwrap arbitrary
+markdown files — lives in [docs/HowToRun.md](docs/HowToRun.md).
+The flags at a glance:
+
+**populate** (file → GitHub) — `--repo`, `--dry-run`,
+`--milestones-only` / `--labels-only` / `--issues-only` /
+`--sync-bodies` (mutually exclusive stages; sync pushes existing
+issues' bodies and milestone descriptions from the file, refusing on
+content divergence), `--force` (with sync: last writer wins),
+`--skip-labels`, `--keep-line-breaks` (default strips hard line breaks
+from prose so GitHub soft-wraps it), `--start-from ID`,
+`--delay SECONDS`, `--yes`, `--env-prefix` / `--no-env-prefix`.
+
+**update** (GitHub → file) — `--repo`, `--check` (diff(1) exit codes:
+0 current / 1 stale / 2 failed), `--no-env-prefix`.
+
+**lint** (no network) — no options; exit 0 clean / 1 errors /
+2 unreadable.
+
 ## Staying fresh automatically (opt-in)
 
 The repository ships a scheduled workflow
