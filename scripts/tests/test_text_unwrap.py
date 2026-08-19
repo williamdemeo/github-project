@@ -65,6 +65,36 @@ CASES: tuple[tuple[str, str, str], ...] = (
         "<!--\nWrapped comment prose.\n-->\n\n<!-- BEGIN GENERATED: unplanned -->\nmirror\n<!-- END GENERATED: unplanned -->\n",
     ),
     (
+        "short setext underlines survive (one = or - suffices)",
+        "Title\n=\nbody\ntext.\n\nSub\n--\nmore\nprose.\n",
+        "Title\n=\nbody text.\n\nSub\n--\nmore prose.\n",
+    ),
+    (
+        "spaced thematic breaks survive",
+        "before.\n- - -\nafter\ntext.\n\n* * *\n\n_ _ _\n",
+        "before.\n- - -\nafter text.\n\n* * *\n\n_ _ _\n",
+    ),
+    (
+        "pipe-less GFM tables survive",
+        "Name | Value\n--- | ---\nfoo | 1\nbar | 2\n\nprose\nafter.\n",
+        "Name | Value\n--- | ---\nfoo | 1\nbar | 2\n\nprose after.\n",
+    ),
+    (
+        "tab-indented code is verbatim",
+        "Prose\nhere.\n\n\tcode one\n\tcode two\n",
+        "Prose here.\n\n\tcode one\n\tcode two\n",
+    ),
+    (
+        "valueless bold metadata never absorbs its following prose",
+        "**Description:**\nBuild the\ncore.\n\n**Exit criterion:**\nCore\nworks.\n",
+        "**Description:**\nBuild the core.\n\n**Exit criterion:**\nCore works.\n",
+    ),
+    (
+        "valued bold metadata neither absorbs nor is absorbed",
+        "**Repository**:  `octocat/demo`\nprose right\nafter it.\n\nlead-in prose\n**Labels:** `a`, `b`\n",
+        "**Repository**:  `octocat/demo`\nprose right after it.\n\nlead-in prose\n**Labels:** `a`, `b`\n",
+    ),
+    (
         "adjacent bold-metadata lines are not merged",
         "### Issue M1-1: Set up\n\n**Labels:** `a`, `b`\n**Milestone:** 1. Core\n\nBody\ntext.\n",
         "### Issue M1-1: Set up\n\n**Labels:** `a`, `b`\n**Milestone:** 1. Core\n\nBody text.\n",
@@ -119,6 +149,28 @@ class PlanFileAcceptance(unittest.TestCase):
         text = EXAMPLE_PLAN.read_text(encoding="utf-8")
         self.assert_parses_identically(text)
         self.assertIn("```mermaid", unwrap(text))
+
+    def test_blankless_metadata_shapes_parse_identically(self) -> None:
+        # Valid plans may omit the blank line after **Description:** /
+        # **Repository**: — unwrapping must not change what the engine
+        # extracts from either shape.
+        variant = PLAN.replace(
+            "**Description:**\n\nBuild the core.",
+            "**Description:**\nBuild the core.",
+        ).replace(
+            "**Repository**:  `octocat/demo`\n",
+            "**Repository**:  `octocat/demo`\nHeader prose follows without a blank.\n",
+        )
+        self.assertNotEqual(variant, PLAN)
+        before = parse_project_plan(variant)
+        after = parse_project_plan(unwrap(variant))
+        self.assertEqual(before.repository, after.repository)
+        self.assertEqual(after.repository, "octocat/demo")
+        self.assertEqual(
+            [m.description for m in before.milestones],
+            [m.description for m in after.milestones],
+        )
+        self.assert_parses_identically(variant)
 
     def test_wrapped_body_reflows(self) -> None:
         wrapped = PLAN.replace(

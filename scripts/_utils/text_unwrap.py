@@ -12,10 +12,11 @@ Description:
   blank lines, headings, horizontal rules and setext underlines,
   tables, blockquotes, fenced code blocks (mermaid, agda, ...),
   indented code blocks, HTML-comment and generated-region marker
-  lines, and the plan grammar's line-oriented bold metadata
-  (`**Labels:** ...`, `**Milestone:** ...`, `**Repository**: ...`) —
-  the engine parses those per line, so they must never merge into a
-  neighbor.  The acceptance property, pinned by the tests: a plan file
+  lines, pipe-bearing (potential GFM table) lines, and the plan
+  grammar's line-oriented bold metadata (`**Labels:** ...`,
+  `**Milestone:** ...`, `**Repository**: ...`, `**Description:**`) —
+  the engine parses those per line, so they are structural in every
+  position: nothing joins onto them and they join onto nothing.  The acceptance property, pinned by the tests: a plan file
   parses IDENTICALLY (same milestones, labels, issue ids and label
   sets) before and after unwrapping, and still lints clean; only
   bodies and descriptions reflow.
@@ -39,23 +40,41 @@ import re
 FENCE_RE = re.compile(r"^(\s*)(`{3,}|~{3,})")
 LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d{1,9}[.)])\s+\S")
 HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s")
-HR_OR_SETEXT_RE = re.compile(r"^\s{0,3}(?:-{3,}|_{3,}|\*{3,}|={3,})\s*$")
+# Setext underlines: ANY run of = or - alone on a line (one character
+# suffices in CommonMark); joining one into prose would destroy the
+# heading above it.
+SETEXT_RE = re.compile(r"^\s{0,3}(?:=+|-+)\s*$")
+# Thematic breaks: three or more of the SAME marker, spaces/tabs
+# permitted between them (`- - -`, `* * *`, `___`).
+THEMATIC_RE = re.compile(r"^\s{0,3}([*_-])[ \t]*(?:\1[ \t]*){2,}$")
 
-# `**Labels:** ...` / `**Milestone:** ...` / `**Repository**: ...` — the
-# plan grammar is line-oriented for these, so such a line always starts
-# its own paragraph; its own wrapped VALUE may still join onto it.
+# `**Labels:** ...` / `**Milestone:** ...` / `**Repository**: ...` /
+# `**Description:**` — the plan grammar is line-oriented for these, so
+# such a line is structural in EVERY position: nothing joins onto it
+# and it joins onto nothing.  (A hand-wrapped metadata VALUE therefore
+# stays as authored; unwrap's contract is "never change how the plan
+# parses", not "repair wrapped grammar" — lint owns that complaint.)
 BOLD_META_RE = re.compile(r"^\s{0,3}\*\*[^*\n]+(?:\*\*\s*:|:\*\*)")
 
 _SENTENCE_END_RE = re.compile(r"[.!?][\"')\]`*_]*$")
 
 
 def is_structural(line: str) -> bool:
-    """A line that must never be merged into a neighboring one."""
+    """A line that must never be merged into a neighboring one.
+
+    Any line containing a pipe is protected as a potential GFM table
+    row — leading pipes are optional in GFM (`Name | Value` over
+    `--- | ---`), and the cost of a false positive is only an
+    unremoved break, never a changed rendering.
+    """
     stripped = line.lstrip()
     return bool(
         HEADING_RE.match(line)
-        or HR_OR_SETEXT_RE.match(line)
-        or stripped.startswith(("|", ">", "<!--", "-->"))
+        or SETEXT_RE.match(line)
+        or THEMATIC_RE.match(line)
+        or BOLD_META_RE.match(line)
+        or "|" in line
+        or stripped.startswith((">", "<!--", "-->"))
     )
 
 
@@ -104,17 +123,17 @@ def unwrap(text: str) -> str:
             if is_structural(line):
                 _flush(paragraph, out)
                 out.append(line)
-            elif LIST_ITEM_RE.match(line) or BOLD_META_RE.match(line):
+            elif LIST_ITEM_RE.match(line):
                 _flush(paragraph, out)
                 paragraph.append(line)
             else:
                 paragraph.append(line)
             continue
 
-        # Fresh block position: four-space-indented lines are code
-        # (list continuations never reach here — their paragraph is
-        # still open when they arrive).
-        if line.startswith("    "):
+        # Fresh block position: four-space- or tab-indented lines are
+        # code (list continuations never reach here — their paragraph
+        # is still open when they arrive).
+        if line.startswith(("    ", "\t")):
             out.append(line)
         elif is_structural(line):
             out.append(line)
