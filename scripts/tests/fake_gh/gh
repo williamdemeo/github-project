@@ -83,6 +83,16 @@ def main() -> int:
         return 0
 
     if args[0] == "api" and "milestones" in args[1]:
+        if "PATCH" in flag_values(args, "-X"):
+            number = int(args[1].rsplit("/", 1)[1])
+            fields = kv_values(args, "-f")
+            milestones = load("milestones.json", [])
+            target = next(m for m in milestones if m["number"] == number)
+            target["description"] = fields.get("description",
+                                               target["description"])
+            save("milestones.json", milestones)
+            print(json.dumps(target))
+            return 0
         if "POST" in flag_values(args, "-X"):
             fields = kv_values(args, "-f")
             milestones = load("milestones.json", [])
@@ -101,6 +111,16 @@ def main() -> int:
 
     if args[0] == "api" and args[1].endswith("/issues"):
         print(json.dumps(load("issues.json", [])))
+        return 0
+
+    if args[:2] == ["issue", "edit"]:
+        number = int(args[2])
+        issues = load("issues.json", [])
+        target = next(i for i in issues if i["number"] == number)
+        body = flag_value(args, "--body")
+        if body is not None:
+            target["body"] = body
+        save("issues.json", issues)
         return 0
 
     if args[:2] == ["issue", "create"]:

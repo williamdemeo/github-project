@@ -405,6 +405,109 @@ class LineBreakHandling(FakeGhHarness):
         self.assertNotIn(self.HINT, proc.stdout)
 
 
+class SyncBodiesClassification(unittest.TestCase):
+    """Pure three-way classification behind --sync-bodies (issue #7)."""
+
+    def setUp(self) -> None:
+        sys.path.insert(0, str(SCRIPTS_DIR))
+        from gh_project_populate import classify_sync
+        self.classify = classify_sync
+
+    def test_identical_is_in_sync(self) -> None:
+        self.assertEqual(self.classify("Body.\n", "Body.\n"), "in-sync")
+
+    def test_crlf_and_trailing_whitespace_normalize(self) -> None:
+        self.assertEqual(self.classify("Body.\n", "Body.\r\n\r\n"), "in-sync")
+
+    def test_wrapping_only_difference_is_reflow(self) -> None:
+        self.assertEqual(
+            self.classify("One long joined line here.",
+                          "One long\njoined line\nhere."),
+            "reflow",
+        )
+
+    def test_content_change_is_divergent(self) -> None:
+        self.assertEqual(
+            self.classify("One long joined line here.",
+                          "One long joined line THERE."),
+            "divergent",
+        )
+
+
+class SyncBodies(FakeGhHarness):
+    """--sync-bodies end to end: reflow pushes, divergence refuses
+    without --force, dry-run predicts, milestones included."""
+
+    WRAPPED_BODY = "Body of\nM1-1 wrapped over\nthree lines."
+    WRAPPED_DESC = "Build the\ncore, wrapped."
+
+    def populate_wrapped(self) -> None:
+        self.plan_path.write_text(
+            PLAN.replace("Body of M1-1.", self.WRAPPED_BODY)
+                .replace("Build the core.", self.WRAPPED_DESC),
+            encoding="utf-8",
+        )
+        proc = self.populate("--keep-line-breaks")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def m11(self) -> dict:
+        return next(i for i in self.issues_on_fake_github()
+                    if i["title"].startswith("[M1-1]"))
+
+    def core_milestone(self) -> dict:
+        milestones = json.loads((self.state / "milestones.json").read_text())
+        return next(m for m in milestones if m["title"] == "1. Core")
+
+    def test_reflow_pushes_and_second_run_is_in_sync(self) -> None:
+        self.populate_wrapped()
+        self.assertIn("\n", self.m11()["body"].split("wrapped")[0] + "wrapped")
+
+        proc = self.populate("--sync-bodies")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("pushed (reflow)", proc.stdout)
+        self.assertTrue(self.m11()["body"].startswith(
+            "Body of M1-1 wrapped over three lines."))
+        self.assertTrue(self.core_milestone()["description"].startswith(
+            "Build the core, wrapped."))
+
+        again = self.populate("--sync-bodies")
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn("0 pushed", again.stdout)
+        self.assertNotIn("pushed (", again.stdout)
+
+    def test_divergence_refuses_then_force_wins(self) -> None:
+        self.populate_wrapped()
+        issues = self.issues_on_fake_github()
+        target = next(i for i in issues if i["title"].startswith("[M1-1]"))
+        target["body"] = "Rewritten independently on GitHub."
+        (self.state / "issues.json").write_text(json.dumps(issues))
+
+        refused = self.populate("--sync-bodies")
+        self.assertEqual(refused.returncode, 1, refused.stdout)
+        self.assertIn("divergent: issue M1-1", refused.stdout)
+        self.assertEqual(self.m11()["body"],
+                         "Rewritten independently on GitHub.")
+
+        forced = self.populate("--sync-bodies", "--force")
+        self.assertEqual(forced.returncode, 0, forced.stdout + forced.stderr)
+        self.assertIn("pushed (forced push)", forced.stdout)
+        self.assertTrue(self.m11()["body"].startswith("Body of M1-1"))
+
+    def test_dry_run_predicts_and_mutates_nothing(self) -> None:
+        self.populate_wrapped()
+        before = json.dumps(self.issues_on_fake_github())
+        proc = self.populate("--sync-bodies", "--dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("would push (reflow)", proc.stdout)
+        self.assertEqual(json.dumps(self.issues_on_fake_github()), before)
+
+    def test_sync_never_creates(self) -> None:
+        proc = self.populate("--sync-bodies")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.issues_on_fake_github(), [])
+        self.assertIn("never creates", proc.stdout)
+
+
 class OrganicIssues(FakeGhHarness):
     """Issue #3 end to end: organically-filed issues render into the
     `unplanned` region, stay out of populate's way, and cannot inject

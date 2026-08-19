@@ -984,6 +984,26 @@ class GitHubClient:
             "-f", f"description={ms.description}",
         ).and_then(_parse_milestone_create_response).map(ms.with_gh_number)
 
+    def update_issue_body(
+        self, gh_number: int, body: str
+    ) -> Result[None, PipelineError]:
+        """Replace issue `gh_number`'s body (populate --sync-bodies)."""
+        return self._run(
+            "issue", "edit", str(gh_number),
+            "--repo", self.repo,
+            "--body", body,
+        ).map(lambda _: None)
+
+    def update_milestone_description(
+        self, gh_number: int, description: str
+    ) -> Result[None, PipelineError]:
+        """Replace milestone `gh_number`'s description (populate --sync-bodies)."""
+        return self._run(
+            "api", f"repos/{self.repo}/milestones/{gh_number}",
+            "-X", "PATCH",
+            "-f", f"description={description}",
+        ).map(lambda _: None)
+
     def create_issue(
         self, issue: Issue, milestone_title: Optional[str]
     ) -> Result[int, PipelineError]:
