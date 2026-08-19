@@ -51,6 +51,18 @@ Issue bodies of already-created issues are edited ON GITHUB (the region
 mirror would overwrite in-file edits on the next update).  Prose outside
 regions is edited in the file.
 
+## Pushing body edits to existing issues (`--sync-bodies`)
+
+populate is create-only, so editing a body in the plan file never
+reaches an issue that already exists.  When file-side bodies should win
+(e.g. after reflowing an already-populated plan), run
+`python3 <engine>/scripts/gh_project_populate.py docs/GITHUB_PROJECT.md --sync-bodies`
+(add `--dry-run` first).  It pushes existing issues' bodies and
+milestone descriptions file → GitHub, per item: identical content
+skips; wrapping-only differences push safely; content divergence is
+REFUSED (the engine stores no base, so it cannot tell which side moved)
+unless `--force` makes the file win.  It never creates anything.
+
 ## Organically-filed issues (the `unplanned` region)
 
 Issues filed directly on GitHub without a `[MN-k]` title prefix never

@@ -405,6 +405,269 @@ class LineBreakHandling(FakeGhHarness):
         self.assertNotIn(self.HINT, proc.stdout)
 
 
+class SyncBodiesClassification(unittest.TestCase):
+    """Pure three-way classification behind --sync-bodies (issue #7)."""
+
+    def setUp(self) -> None:
+        sys.path.insert(0, str(SCRIPTS_DIR))
+        from gh_project_populate import classify_sync
+        self.classify = classify_sync   # accepts allow_empty_placeholder
+
+    def test_identical_is_in_sync(self) -> None:
+        self.assertEqual(self.classify("Body.\n", "Body.\n"), "in-sync")
+
+    def test_crlf_and_trailing_whitespace_normalize(self) -> None:
+        self.assertEqual(self.classify("Body.\n", "Body.\r\n\r\n"), "in-sync")
+
+    def test_wrapping_only_difference_is_reflow(self) -> None:
+        self.assertEqual(
+            self.classify("One long joined line here.",
+                          "One long\njoined line\nhere."),
+            "reflow",
+        )
+
+    def test_content_change_is_divergent(self) -> None:
+        self.assertEqual(
+            self.classify("One long joined line here.",
+                          "One long joined line THERE."),
+            "divergent",
+        )
+
+    def test_leading_indentation_is_meaningful(self) -> None:
+        # A four-space-indented first line on GitHub is a code block;
+        # eating it made different bodies compare in-sync — and in-sync
+        # short-circuits even --force.
+        self.assertEqual(self.classify("code\nrest.", "    code\nrest."),
+                         "divergent")
+        self.assertEqual(self.classify("    code\nrest.", "    code\nrest."),
+                         "in-sync")
+
+    def test_github_side_hard_breaks_are_divergent(self) -> None:
+        # `a  \nb` renders a <br>; unwrap() would erase it, so reflow
+        # must not silently overwrite it (two-space and backslash forms).
+        self.assertEqual(self.classify("a b", "a  \nb"), "divergent")
+        self.assertEqual(self.classify("a b", "a\\\nb"), "divergent")
+        # Identical bodies with hard breaks are still just in-sync.
+        self.assertEqual(self.classify("a  \nb", "a  \nb"), "in-sync")
+
+    def test_file_side_hard_breaks_still_reflow(self) -> None:
+        # The push carries the file's hard break to GitHub intact —
+        # nothing GitHub-side is lost, so no --force is demanded.
+        # Both markdown forms: trailing double-space AND backslash (the
+        # backslash survives unwrap's join, so it needs explicit
+        # defanging in the equivalence comparison).
+        self.assertEqual(self.classify("a  \nb", "a\nb"), "reflow")
+        self.assertEqual(self.classify("a\\\nb", "a\nb"), "reflow")
+
+    def test_empty_body_sentinel_is_in_sync_for_issues_only(self) -> None:
+        # update renders an empty GitHub body as the placeholder; the
+        # parsed-back sentinel must count as "still empty" for ISSUE
+        # pairs — but a milestone description could legitimately BE
+        # that text, so without the flag it stays divergent.
+        sentinel = "_(no description on GitHub)_"
+        self.assertEqual(
+            self.classify(sentinel, "", allow_empty_placeholder=True),
+            "in-sync",
+        )
+        self.assertEqual(self.classify(sentinel, ""), "divergent")
+        # A nonempty, different GitHub body gets no such pass.
+        self.assertEqual(
+            self.classify(sentinel, "Real body.", allow_empty_placeholder=True),
+            "divergent",
+        )
+
+    def test_escaped_mirror_of_marker_bearing_body_is_in_sync(self) -> None:
+        # update writes the DEFANGED form of marker-bearing GitHub
+        # bodies into the file; that mirror must classify in-sync, or
+        # every such issue diverges forever and --force would push our
+        # escape artifacts upstream.
+        github = "See <!-- END GENERATED: milestone-1 --> markers."
+        file_mirror = "See <!-- END GENERATED (escaped): milestone-1 --> markers."
+        self.assertEqual(self.classify(file_mirror, github), "in-sync")
+
+    def test_raw_markers_on_github_get_no_reflow_shortcut(self) -> None:
+        # Wrapping-equivalent, but GitHub carries raw marker text the
+        # file can only hold escaped: any push would send escapes
+        # upstream, so it must demand --force.
+        github = "About\n<!-- BEGIN GENERATED: x --> markers\nhere."
+        file_side = "About <!-- BEGIN GENERATED (escaped): x --> markers here."
+        self.assertEqual(self.classify(file_side, github), "divergent")
+
+    def test_live_runs_classify_against_revalidated_text(self) -> None:
+        # The refuse-on-divergence guarantee must cover edits made
+        # after the snapshot (e.g. while the confirmation prompt sat
+        # open): the executor re-fetches each target immediately before
+        # mutating and classifies against THAT.
+        import contextlib
+        import io
+        from gh_project_populate import SyncTarget, execute_sync_bodies
+        from _utils import Result
+
+        quiet = io.StringIO()
+        pushes: list[str] = []
+        target = SyncTarget(
+            label="issue M1-1 (#1)",
+            kind="issue",
+            file_text="Body, reflowed onto one line.",
+            snapshot_text="Body,\nreflowed onto\none line.",  # reflow-safe
+            fetch=lambda: Result.ok("Edited on GitHub meanwhile."),  # divergent
+            push=lambda: (pushes.append("pushed"), Result.ok(None))[1],
+        )
+        with contextlib.redirect_stdout(quiet):
+            problems = execute_sync_bodies(
+                [target], force=False, dry_run=False, delay=0,
+            )
+        self.assertIn("divergent", quiet.getvalue())
+        self.assertEqual(problems, 1)      # refused on the FRESH text
+        self.assertEqual(pushes, [])       # nothing mutated
+
+        # Dry runs preview from the snapshot, never fetch, and report
+        # planned work as "would push", not as done.
+        fetches: list[str] = []
+        target = SyncTarget(
+            label="issue M1-1 (#1)",
+            kind="issue",
+            file_text="Body, reflowed onto one line.",
+            snapshot_text="Body,\nreflowed onto\none line.",
+            fetch=lambda: (fetches.append("fetched"), Result.ok(""))[1],
+            push=lambda: Result.ok(None),
+        )
+        preview = io.StringIO()
+        with contextlib.redirect_stdout(preview):
+            problems = execute_sync_bodies(
+                [target], force=False, dry_run=True, delay=0,
+            )
+        self.assertEqual(problems, 0)
+        self.assertEqual(fetches, [])
+        self.assertIn("1 would push", preview.getvalue())
+        self.assertNotIn("1 pushed,", preview.getvalue())
+
+
+class SyncBodies(FakeGhHarness):
+    """--sync-bodies end to end: reflow pushes, divergence refuses
+    without --force, dry-run predicts, milestones included."""
+
+    WRAPPED_BODY = "Body of\nM1-1 wrapped over\nthree lines."
+    WRAPPED_DESC = "Build the\ncore, wrapped."
+
+    def populate_wrapped(self) -> None:
+        self.plan_path.write_text(
+            PLAN.replace("Body of M1-1.", self.WRAPPED_BODY)
+                .replace("Build the core.", self.WRAPPED_DESC),
+            encoding="utf-8",
+        )
+        proc = self.populate("--keep-line-breaks")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def m11(self) -> dict:
+        return next(i for i in self.issues_on_fake_github()
+                    if i["title"].startswith("[M1-1]"))
+
+    def core_milestone(self) -> dict:
+        milestones = json.loads((self.state / "milestones.json").read_text())
+        return next(m for m in milestones if m["title"] == "1. Core")
+
+    def test_reflow_pushes_and_second_run_is_in_sync(self) -> None:
+        self.populate_wrapped()
+        self.assertIn("\n", self.m11()["body"].split("wrapped")[0] + "wrapped")
+
+        proc = self.populate("--sync-bodies")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("pushed (reflow)", proc.stdout)
+        self.assertTrue(self.m11()["body"].startswith(
+            "Body of M1-1 wrapped over three lines."))
+        self.assertTrue(self.core_milestone()["description"].startswith(
+            "Build the core, wrapped."))
+
+        again = self.populate("--sync-bodies")
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn("0 pushed", again.stdout)
+        self.assertNotIn("pushed (", again.stdout)
+
+    def test_divergence_refuses_then_force_wins(self) -> None:
+        self.populate_wrapped()
+        issues = self.issues_on_fake_github()
+        target = next(i for i in issues if i["title"].startswith("[M1-1]"))
+        target["body"] = "Rewritten independently on GitHub."
+        (self.state / "issues.json").write_text(json.dumps(issues))
+
+        refused = self.populate("--sync-bodies")
+        self.assertEqual(refused.returncode, 1, refused.stdout)
+        self.assertIn("divergent: issue M1-1", refused.stdout)
+        self.assertEqual(self.m11()["body"],
+                         "Rewritten independently on GitHub.")
+
+        forced = self.populate("--sync-bodies", "--force")
+        self.assertEqual(forced.returncode, 0, forced.stdout + forced.stderr)
+        self.assertIn("pushed (forced push)", forced.stdout)
+        self.assertTrue(self.m11()["body"].startswith("Body of M1-1"))
+
+    def test_dry_run_predicts_and_mutates_nothing(self) -> None:
+        self.populate_wrapped()
+        before = json.dumps(self.issues_on_fake_github())
+        proc = self.populate("--sync-bodies", "--dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("would push (reflow)", proc.stdout)
+        self.assertEqual(json.dumps(self.issues_on_fake_github()), before)
+
+    def test_empty_body_round_trip_stays_in_sync(self) -> None:
+        # A plan issue with an EMPTY body: populate pushes "", update
+        # mirrors the placeholder into the file, and sync must report
+        # in-sync — not diverge and (under --force) write the
+        # placeholder text into a deliberately empty issue.
+        self.plan_path.write_text(
+            PLAN.replace("Body of M2-1.\n", ""), encoding="utf-8",
+        )
+        self.assertEqual(self.populate().returncode, 0)
+        m21 = next(i for i in self.issues_on_fake_github()
+                   if i["title"].startswith("[M2-1]"))
+        self.assertEqual(m21["body"], "")
+        self.assertEqual(self.update().returncode, 0)
+        self.assertIn("_(no description on GitHub)_",
+                      self.plan_path.read_text(encoding="utf-8"))
+
+        proc = self.populate("--sync-bodies")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("in sync: issue M2-1", proc.stdout)
+        m21 = next(i for i in self.issues_on_fake_github()
+                   if i["title"].startswith("[M2-1]"))
+        self.assertEqual(m21["body"], "")
+
+    def test_force_requires_sync_bodies(self) -> None:
+        proc = self.populate("--force")
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn("--force only applies to --sync-bodies", proc.stderr)
+
+    def test_marker_bearing_body_round_trip_stays_in_sync(self) -> None:
+        # An authored plan cannot carry raw marker text (lint forbids
+        # it — the file grammar owns those), so the realistic path is a
+        # GitHub-side edit: someone writes marker-like text into a live
+        # body, update mirrors it back DEFANGED, and sync must then
+        # report in-sync rather than divergent-forever.
+        self.assertEqual(self.populate().returncode, 0)
+        issues = self.issues_on_fake_github()
+        target = next(i for i in issues if i["title"].startswith("[M1-1]"))
+        target["body"] = "Body with <!-- END GENERATED: milestone-9 --> inline."
+        (self.state / "issues.json").write_text(json.dumps(issues))
+        self.assertEqual(self.update().returncode, 0)
+        self.assertIn("END GENERATED (escaped): milestone-9",
+                      self.plan_path.read_text(encoding="utf-8"))
+
+        proc = self.populate("--sync-bodies")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("in sync: issue M1-1", proc.stdout)
+        self.assertIn("0 pushed", proc.stdout)
+        # GitHub's raw marker text was not replaced by escape artifacts.
+        self.assertIn("<!-- END GENERATED: milestone-9 -->",
+                      self.m11()["body"])
+
+    def test_sync_never_creates(self) -> None:
+        proc = self.populate("--sync-bodies")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.issues_on_fake_github(), [])
+        self.assertIn("never creates", proc.stdout)
+
+
 class OrganicIssues(FakeGhHarness):
     """Issue #3 end to end: organically-filed issues render into the
     `unplanned` region, stay out of populate's way, and cannot inject

@@ -464,6 +464,27 @@ def record_issue_number(text: str, issue_id: str, gh_number: int) -> tuple[str, 
     return "".join(out), found
 
 
+# ── Marker neutralization (shared by update's renderer and populate's
+#    --sync-bodies classifier) ────────────────────────────────────────────────
+
+# A live GitHub body/title may contain anything — including text shaped
+# like this file's own region markers.  Rendered verbatim, such a line
+# would close (or open) a region on the next parse and corrupt the
+# file, so the comment-opening form is defanged before insertion.  The
+# escape is deterministic, keeping `--check` stable across renders.
+MARKER_IN_BODY_RE = re.compile(r"<!--(\s*)(BEGIN|END) GENERATED:")
+
+# What update renders into a region when the GitHub issue body is
+# empty.  Shared so populate's --sync-bodies can recognize the
+# round-tripped sentinel as "still empty" rather than as new content.
+EMPTY_BODY_PLACEHOLDER = "_(no description on GitHub)_"
+
+
+def neutralize_markers(body: str) -> str:
+    """Defang region-marker look-alikes inside live GitHub content."""
+    return MARKER_IN_BODY_RE.sub(r"<!--\1\2 GENERATED (escaped):", body)
+
+
 # ── Generated-region parsing (used by update and lint) ─────────────────────
 
 BEGIN_RE = re.compile(r"<!--\s*BEGIN GENERATED:\s*([\w-]+)\s*-->")
@@ -984,6 +1005,45 @@ class GitHubClient:
             "-f", f"description={ms.description}",
         ).and_then(_parse_milestone_create_response).map(ms.with_gh_number)
 
+    def get_issue_body(self, gh_number: int) -> Result[str, PipelineError]:
+        """Fetch ONE issue's current body — the revalidation read
+        --sync-bodies performs immediately before each mutation, so the
+        divergence verdict covers edits made after the run's snapshot
+        (e.g. while the confirmation prompt sat open)."""
+        return self._run(
+            "api", f"repos/{self.repo}/issues/{gh_number}", "-X", "GET",
+        ).and_then(lambda out: _parse_object_field(out, "body", "issue"))
+
+    def get_milestone_description(
+        self, gh_number: int
+    ) -> Result[str, PipelineError]:
+        """Fetch ONE milestone's current description (see get_issue_body)."""
+        return self._run(
+            "api", f"repos/{self.repo}/milestones/{gh_number}", "-X", "GET",
+        ).and_then(
+            lambda out: _parse_object_field(out, "description", "milestone")
+        )
+
+    def update_issue_body(
+        self, gh_number: int, body: str
+    ) -> Result[None, PipelineError]:
+        """Replace issue `gh_number`'s body (populate --sync-bodies)."""
+        return self._run(
+            "issue", "edit", str(gh_number),
+            "--repo", self.repo,
+            "--body", body,
+        ).map(lambda _: None)
+
+    def update_milestone_description(
+        self, gh_number: int, description: str
+    ) -> Result[None, PipelineError]:
+        """Replace milestone `gh_number`'s description (populate --sync-bodies)."""
+        return self._run(
+            "api", f"repos/{self.repo}/milestones/{gh_number}",
+            "-X", "PATCH",
+            "-f", f"description={description}",
+        ).map(lambda _: None)
+
     def create_issue(
         self, issue: Issue, milestone_title: Optional[str]
     ) -> Result[int, PipelineError]:
@@ -1128,6 +1188,38 @@ def _parse_json(stdout: str, kind: str) -> Result[list[dict], PipelineError]:
             ))
         items.extend(data)
     return Result.ok(items)
+
+
+def _parse_object_field(
+    stdout: str, field: str, kind: str
+) -> Result[str, PipelineError]:
+    """Extract one string field from a single-object `gh api` response."""
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        return Result.err(PipelineError(
+            error_type=ErrorType.PARSING_ERROR,
+            message=f"failed to decode {kind} JSON from `gh`",
+            cause=e,
+            context={"stdout_preview": stdout[:500]},
+        ))
+    if not isinstance(data, dict):
+        return Result.err(PipelineError(
+            error_type=ErrorType.PARSING_ERROR,
+            message=f"expected a JSON object for {kind}, got {type(data).__name__}",
+        ))
+    value = data.get(field)
+    if value is None:
+        return Result.ok("")
+    if not isinstance(value, str):
+        return Result.err(PipelineError(
+            error_type=ErrorType.PARSING_ERROR,
+            message=(
+                f"expected {kind}.{field} to be a string, "
+                f"got {type(value).__name__}"
+            ),
+        ))
+    return Result.ok(value)
 
 
 def _parse_milestone_create_response(stdout: str) -> Result[int, PipelineError]:

@@ -64,9 +64,11 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 from _gh_project_lib import (  # noqa: E402
+    EMPTY_BODY_PLACEHOLDER,
     GitHubClient,
     Issue,
     ParsedFile,
+    neutralize_markers,
     parse_file,
     parse_repository,
 )
@@ -134,19 +136,6 @@ def group_unplanned(
 
 _ID_PREFIX_RE = re.compile(r"^\[M\d+-\d+[a-z]?\]\s+(.+)$")
 
-# A live GitHub body may contain anything — including text shaped like
-# this file's own region markers.  Rendered verbatim, such a line would
-# close (or open) a region on the next parse and corrupt the file, so
-# the comment-opening form is defanged before insertion.  The escape is
-# deterministic, keeping `--check` stable across repeated renders.
-_MARKER_IN_BODY_RE = re.compile(r"<!--(\s*)(BEGIN|END) GENERATED:")
-
-
-def neutralize_markers(body: str) -> str:
-    """Defang region-marker look-alikes inside a live issue body."""
-    return _MARKER_IN_BODY_RE.sub(r"<!--\1\2 GENERATED (escaped):", body)
-
-
 def strip_id_prefix(title: str) -> str:
     """Drop the leading `[MN-k]` from an issue title; the heading reproduces
     the identifier separately, so leaving it in the title text is redundant."""
@@ -172,7 +161,7 @@ def render_issue(issue: Issue) -> str:
         f"**Assignees:** {', '.join('@' + a for a in issue.assignees)}\n\n"
         if issue.assignees else ""
     )
-    body = issue.body.strip() if issue.body else "_(no description on GitHub)_"
+    body = issue.body.strip() if issue.body else EMPTY_BODY_PLACEHOLDER
     body = neutralize_markers(body)
     return (
         f"### Issue {issue.id}: {title} ({ref})\n"
@@ -198,7 +187,7 @@ def render_unplanned_issue(issue: Issue) -> str:
         f"**Assignees:** {', '.join('@' + a for a in issue.assignees)}\n\n"
         if issue.assignees else ""
     )
-    body = issue.body.strip() if issue.body else "_(no description on GitHub)_"
+    body = issue.body.strip() if issue.body else EMPTY_BODY_PLACEHOLDER
     body = neutralize_markers(body)
     title = neutralize_markers(issue.title)
     return (

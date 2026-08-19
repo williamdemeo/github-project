@@ -41,6 +41,13 @@ Options:
   --issues-only      Only create issues (milestones must already exist)
   --skip-labels      Skip label creation
   --start-from ID    Create only issues with ID >= this (e.g. M1-3)
+  --sync-bodies      Create nothing; push existing issues' bodies and
+                     milestone descriptions from the file to GitHub —
+                     the per-issue inverse of update.  Content
+                     divergence is refused per item unless --force
+                     (last writer wins); wrapping-only differences push
+                     safely without it
+  --force            With --sync-bodies: push divergent content anyway
   --keep-line-breaks Push bodies exactly as authored; by default hard
                      line breaks in prose are stripped so GitHub
                      soft-wraps it
@@ -61,9 +68,12 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import textwrap
 import time
+from dataclasses import dataclass
+from typing import Callable
 from pathlib import Path
 
 # Permit `python3 scripts/gh_project_populate.py ...` from the repo root
@@ -74,6 +84,9 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 from _gh_project_lib import (  # noqa: E402
+    EMPTY_BODY_PLACEHOLDER,
+    MARKER_IN_BODY_RE,
+    neutralize_markers,
     GitHubClient,
     IssuePlan,
     LabelPlan,
@@ -148,6 +161,156 @@ def issue_blocker(
             f"not available on GitHub (create milestones first, then re-run)"
         )
     return None
+
+
+def _normalized(body: str) -> str:
+    """Comparison form: GitHub stores web edits with CRLF, and TRAILING
+    whitespace is never meaningful.  Leading whitespace stays — a
+    four-space-indented first line is a code block, and eating it would
+    make genuinely different bodies compare equal (and in-sync
+    short-circuits even --force)."""
+    return body.replace("\r\n", "\n").rstrip()
+
+
+# Markdown hard breaks: two+ trailing spaces, or a backslash, before a
+# newline.  unwrap() deliberately removes them, so they are invisible
+# to the reflow equivalence — but on the GitHub side they are intended
+# rendering (<br>) that a push would destroy.
+_HARD_BREAK_RE = re.compile(r"(?:[ ]{2,}|\\)\n")
+
+
+def classify_sync(
+    file_body: str, github_body: str, *, allow_empty_placeholder: bool = False
+) -> str:
+    """How the plan file's body relates to GitHub's, with no stored base.
+
+    With allow_empty_placeholder (issue pairs only), a file body that is
+    exactly update's empty-body sentinel counts as in sync with an empty
+    GitHub body: that text is update's own rendering of "no description",
+    and pushing it would write the placeholder into a deliberately
+    empty issue.  Milestones don't get this rule — a milestone
+    description could legitimately BE that text.
+
+    - "in-sync":   identical after CRLF/trailing-whitespace
+                   normalization (leading whitespace is meaningful and
+                   preserved).
+    - "reflow":    identical after unwrap() of both sides — the content
+                   matches and only line wrapping differs, so pushing
+                   loses neither words nor GitHub-side formatting.  This
+                   is the case --sync-bodies exists for.
+    - "divergent": the content differs, or GitHub's body carries
+                   explicit hard-break syntax (trailing double-space or
+                   backslash before a newline) that reflow would
+                   silently destroy.  The engine stores no base version,
+                   so it cannot tell which side moved — refused by
+                   default; --force pushes the file's version (last
+                   writer wins).  Hard breaks on the FILE side alone do
+                   not diverge: the push carries them to GitHub intact.
+    """
+    ours, theirs = _normalized(file_body), _normalized(github_body)
+    if ours == theirs:
+        return "in-sync"
+    if allow_empty_placeholder and not theirs \
+            and ours == EMPTY_BODY_PLACEHOLDER:
+        return "in-sync"
+    # update writes the DEFANGED form of marker-bearing GitHub bodies
+    # into the file (neutralize_markers), so a file that is exactly the
+    # escaped mirror of GitHub is in sync — pushing it would replace the
+    # real body with our escape artifacts.
+    if ours == neutralize_markers(theirs):
+        return "in-sync"
+    if _HARD_BREAK_RE.search(theirs):
+        return "divergent"
+    # Raw region-marker text on the GitHub side gets no reflow shortcut
+    # either: the file can only ever hold the escaped form, so any push
+    # would send escape artifacts upstream.  --force remains true
+    # last-writer-wins, escapes included.
+    if MARKER_IN_BODY_RE.search(theirs):
+        return "divergent"
+    # File-side hard breaks are defanged for the EQUIVALENCE test only:
+    # the two-space form vanishes under unwrap's rstrip anyway, but the
+    # backslash form would survive the join ("a\\ b") and spuriously
+    # demand --force for a push that preserves the break verbatim.
+    if unwrap(_HARD_BREAK_RE.sub("\n", ours)) == unwrap(theirs):
+        return "reflow"
+    return "divergent"
+
+
+@dataclass(frozen=True)
+class SyncTarget:
+    """One existing GitHub item --sync-bodies may rewrite."""
+    label: str
+    kind: str                                  # "issue" | "milestone"
+    file_text: str
+    snapshot_text: str
+    fetch: Callable[[], object]                # () -> Result[str, PipelineError]
+    push: Callable[[], object]                 # () -> Result[None, PipelineError]
+
+
+def execute_sync_bodies(
+    targets: list[SyncTarget],
+    force: bool,
+    dry_run: bool,
+    delay: float,
+) -> int:
+    """Push plan-file bodies/descriptions to their existing GitHub
+    counterparts.  Returns the number of failures + refusals.
+
+    Dry runs classify against the run's snapshot; LIVE runs re-fetch
+    each target immediately before mutating and classify against that
+    fresh text, so the refuse-on-divergence guarantee also covers edits
+    made after the snapshot — e.g. while the confirmation prompt sat
+    open.  (GitHub's API has no conditional issue update, so a
+    milliseconds-wide window remains; the revalidation shrinks it from
+    prompt-sized to that.)  Refusals are per-item — one divergent body
+    does not block the reflow-safe ones.
+    """
+    in_sync = pushed = refused = failed = 0
+    for target in targets:
+        if dry_run:
+            github_text = target.snapshot_text
+        else:
+            fresh = target.fetch()
+            if fresh.is_err:
+                failed += 1
+                print(f"  ! {target.label}: revalidation failed: "
+                      f"{fresh.unwrap_err()}")
+                continue
+            github_text = fresh.unwrap()
+        verdict = classify_sync(
+            target.file_text, github_text,
+            allow_empty_placeholder=target.kind == "issue",
+        )
+        if verdict == "in-sync":
+            in_sync += 1
+            print(f"  = in sync: {target.label}")
+            continue
+        if verdict == "divergent" and not force:
+            refused += 1
+            print(
+                f"  ! divergent: {target.label} — content differs beyond "
+                f"line wrapping and no base is stored to tell which side "
+                f"moved; re-run with --force to push the file's version"
+            )
+            continue
+        tag = "forced push" if verdict == "divergent" else "reflow"
+        if dry_run:
+            pushed += 1
+            print(f"  ~ would push ({tag}): {target.label}")
+            continue
+        result = target.push()
+        if result.is_ok:
+            pushed += 1
+            print(f"  ~ pushed ({tag}): {target.label}")
+        else:
+            failed += 1
+            print(f"  ! {target.label}: {result.unwrap_err()}")
+        time.sleep(delay)
+    verb = "would push" if dry_run else "pushed"
+    print()
+    print(f"  sync: {pushed} {verb}, {in_sync} already in sync, "
+          f"{refused} divergent (refused), {failed} failed")
+    return refused + failed
 
 
 def print_issue_plan(
@@ -298,6 +461,72 @@ def execute_issues(
     return text, created, failed
 
 
+def run_sync_bodies(
+    client: GitHubClient,
+    snapshot: RepoSnapshot,
+    milestone_plan: MilestonePlan,
+    issue_plan: IssuePlan,
+    args: argparse.Namespace,
+) -> int:
+    """The --sync-bodies mode: push file bodies to EXISTING GitHub
+    counterparts; never creates anything (issue #7)."""
+    issue_targets = [
+        SyncTarget(
+            label=f"issue {desired.id} (#{live.gh_number})",
+            kind="issue",
+            file_text=desired.body,
+            snapshot_text=live.body,
+            fetch=lambda n=live.gh_number: client.get_issue_body(n),
+            push=lambda n=live.gh_number, b=desired.body:
+                client.update_issue_body(n, b),
+        )
+        for desired, live in issue_plan.existing
+        if live.gh_number is not None
+    ]
+    live_desc = {m.gh_number: m.description for m in snapshot.milestones}
+    milestone_targets = [
+        SyncTarget(
+            label=f"milestone {ms.title} (#{ms.gh_number})",
+            kind="milestone",
+            file_text=ms.description,
+            snapshot_text=live_desc.get(ms.gh_number, ""),
+            fetch=lambda n=ms.gh_number: client.get_milestone_description(n),
+            push=lambda n=ms.gh_number, d=ms.description:
+                client.update_milestone_description(n, d),
+        )
+        for ms in milestone_plan.existing
+        if ms.gh_number
+    ]
+
+    _stage_header(
+        "SYNCING BODIES (file → GitHub, existing items only)"
+        + ("  [dry run]" if args.dry_run else "")
+    )
+    targets = issue_targets + milestone_targets
+    if not targets:
+        print("  nothing to sync: no plan issue or milestone exists on "
+              "GitHub yet")
+    if not args.dry_run and targets and not args.yes:
+        print(f"This may rewrite up to {len(issue_targets)} issue bodies "
+              f"and {len(milestone_targets)} milestone descriptions on "
+              f"GitHub.")
+        response = input("Continue? [y/N] ").strip().lower()
+        if response not in ("y", "yes"):
+            print("Aborted.")
+            return 0
+
+    problems = execute_sync_bodies(
+        targets, force=args.force, dry_run=args.dry_run, delay=args.delay,
+    )
+    if issue_plan.to_create:
+        print(
+            f"  note: {len(issue_plan.to_create)} plan issue(s) do not "
+            f"exist on GitHub — --sync-bodies never creates; run populate "
+            f"without it first"
+        )
+    return 1 if problems else 0
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -326,6 +555,14 @@ def build_parser() -> argparse.ArgumentParser:
     stage.add_argument("--milestones-only", action="store_true")
     stage.add_argument("--labels-only", action="store_true")
     stage.add_argument("--issues-only", action="store_true")
+    stage.add_argument("--sync-bodies", action="store_true",
+                       help="create nothing; push existing issues' bodies "
+                            "(and milestone descriptions) from the plan file "
+                            "to GitHub — the per-issue inverse of update.  "
+                            "Refuses on content divergence unless --force")
+    parser.add_argument("--force", action="store_true",
+                        help="with --sync-bodies: push even when the GitHub "
+                             "side has content changes (last writer wins)")
     parser.add_argument("--skip-labels", action="store_true")
     parser.add_argument("--keep-line-breaks", action="store_true",
                         help="push bodies exactly as authored; by default "
@@ -348,6 +585,9 @@ def main() -> int:
     args = build_parser().parse_args()
     if args.no_env_prefix:
         args.env_prefix = False
+    if args.force and not args.sync_bodies:
+        print("error: --force only applies to --sync-bodies", file=sys.stderr)
+        return 2
 
     do_labels = not args.issues_only and not args.milestones_only and not args.skip_labels
     do_milestones = not args.issues_only and not args.labels_only
@@ -422,6 +662,11 @@ def main() -> int:
     label_plan = plan_labels(plan.labels, snapshot.labels)
     milestone_plan = plan_milestones(plan.milestones, snapshot.milestones)
     issue_plan = plan_issues(desired_issues, snapshot.issues)
+
+    if args.sync_bodies:
+        return run_sync_bodies(
+            client, snapshot, milestone_plan, issue_plan, args
+        )
 
     # Availability as it WILL stand when the issues stage runs, given
     # the selected stages: entities already on GitHub, plus those this
