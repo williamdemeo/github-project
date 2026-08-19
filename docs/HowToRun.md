@@ -72,10 +72,11 @@ items (see below).
 - `--milestones-only` / `--labels-only` / `--issues-only`
   Run a single creation stage.  Mutually exclusive with each other and
   with `--sync-bodies`.  `--issues-only` requires the plan's milestones
-  to already exist on GitHub: issues whose declared milestone is
-  missing are skipped and counted as failures rather than created
-  milestone-less (populate never revisits existing issues, so that
-  incompleteness would be permanent).
+  AND every label its issues reference to already exist on GitHub —
+  this mode creates neither: an issue whose declared milestone or any
+  referenced label is unavailable is not created and counts as a
+  failure, rather than being created incomplete (populate never
+  revisits existing issues, so the incompleteness would be permanent).
 
 - `--sync-bodies`
   Create nothing; push existing issues' bodies and milestone
@@ -128,9 +129,11 @@ items (see below).
 
 ### EXIT STATUS
 
-    0  everything requested was created / synced or already existed
-    1  some items failed, were refused (label collisions, divergent
-       bodies), or were skipped
+    0  everything requested was created / synced, already existed, or
+       was deliberately filtered (--start-from)
+    1  some items failed or were refused: creation errors, issues
+       blocked by an unavailable label or milestone, label
+       near-collisions, divergent bodies under --sync-bodies
     2  the run could not proceed (unreadable file, lint errors, no
        repository, snapshot failure, invalid flag combination)
 
@@ -234,11 +237,13 @@ gate.
 ## Stripping hard line breaks from any markdown file
 
 The unwrap logic populate uses lives in the engine's `_utils` package
-(`scripts/_utils/text_unwrap.py`) as a pure function — structure-aware
-(headings, tables, fenced/indented code, blockquotes, list items,
+(`scripts/_utils/text_unwrap.py`) as a pure function —
+structure-aware (headings, tables, fenced/indented code, blockquotes,
 region markers, and the plan grammar's `**Labels:**`-style metadata
-all survive byte-for-byte), sentence-spacing-preserving, and
-idempotent.  To use it directly on a file, from an engine checkout:
+all survive byte-for-byte; list STRUCTURE is preserved — markers, one
+item per line, empty items untouched — while wrapped prose INSIDE an
+item is reflowed onto its marker line, exactly like any paragraph),
+sentence-spacing-preserving, and idempotent.  To use it directly on a file, from an engine checkout:
 
 ```sh
 python3 - docs/SOMEFILE.md <<'EOF'

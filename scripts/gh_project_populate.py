@@ -38,7 +38,8 @@ Options:
   --dry-run          Print the plan without mutating anything
   --milestones-only  Only create milestones
   --labels-only      Only create labels
-  --issues-only      Only create issues (milestones must already exist)
+  --issues-only      Only create issues (their milestones and every
+                     referenced label must already exist)
   --skip-labels      Skip label creation
   --start-from ID    Create only issues with ID >= this (e.g. M1-3)
   --sync-bodies      Create nothing; push existing issues' bodies and
