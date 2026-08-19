@@ -3,40 +3,38 @@ File: scripts/_utils/text_unwrap.py
 
 Description:
   Remove hard line breaks from markdown prose: every wrapped paragraph
-  (including list-item continuations) becomes one long line, so
-  renderers that soft-wrap — the GitHub issue page above all — wrap it
-  themselves.  gh_project_populate.py applies this to the plan file by
-  default, so authored ~72-column prose reaches GitHub unwrapped.
+  (including list-item continuations) becomes one long line, so renderers that
+  soft-wrap (the GitHub issue page above all) wrap it themselves.
+  gh_project_populate.py applies this to the plan file by default, so authored
+  ~72-column prose reaches GitHub unwrapped.
 
-  Everything that is not reflowable prose survives byte-for-byte:
-  blank lines, headings, horizontal rules and setext underlines,
-  tables, blockquotes, fenced code blocks (mermaid, agda, ...),
-  indented code blocks, HTML-comment and generated-region marker
-  lines, pipe-bearing (potential GFM table) lines, and the plan
-  grammar's line-oriented bold metadata (`**Labels:** ...`,
-  `**Milestone:** ...`, `**Repository**: ...`, `**Description:**`) —
-  the engine parses those per line, so they are structural in every
-  position: nothing joins onto them and they join onto nothing.  The acceptance property, pinned by the tests: a plan file
-  parses IDENTICALLY (same milestones, labels, issue ids and label
-  sets) before and after unwrapping, and still lints clean; only
-  bodies and descriptions reflow.
+  Everything that is not reflowable prose survives byte-for-byte: blank lines,
+  headings, horizontal rules and setext underlines, tables, blockquotes, fenced code
+  blocks (mermaid, agda, ...), indented code blocks, HTML-comment and generated-region
+  marker lines, pipe-bearing (potential GFM table) lines, and the plan grammar's
+  line-oriented bold metadata (`**Labels:** ...`, `**Milestone:** ...`,
+  `**Repository**: ...`, `**Description:**`) — the engine parses those per line, so
+  they are structural in every position: nothing joins onto them and they join onto
+  nothing.
 
-  Join rule: a break after sentence-ending punctuation becomes two
-  spaces (the two-spaces-after-a-period prose style); any other break
-  becomes one space.  `unwrap` is a total function and idempotent.
+  The acceptance property, pinned by the tests: a plan file parses IDENTICALLY (same
+  milestones, labels, issue ids and label sets) before and after unwrapping, and
+  still lints clean; only bodies and descriptions reflow.
 
-  Known conservative limitation: a list item's SECOND paragraph
-  (four-space-indented prose after a blank line inside the item) is
-  indistinguishable from an indented code block without tracking list
-  context across blank lines, so it is preserved as-is rather than
-  reflowed.  The error is in the safe direction — an unremoved break,
+  Join rule: a break after sentence-ending punctuation becomes two spaces (the
+  two-spaces-after-a-period prose style); any other break becomes one space.
+  `unwrap` is a total function and idempotent.
+
+  Known conservative limitation: a list item's SECOND paragraph (four-space-indented
+  prose after a blank line inside the item) is indistinguishable from an indented code
+  block without tracking list context across blank lines, so it is preserved as-is
+  rather than reflowed.  The error is in the safe direction — an unremoved break,
   never a changed rendering.
 
 Design Principles:
-  - Pure: a single str -> str transform; no I/O (callers use
-    file_ops), no exceptions on any input.
-  - Line-classification constants are module-level and independently
-    testable.
+  - Pure: a single str -> str transform; no I/O (callers use file_ops), no exceptions
+    on any input.
+  - Line-classification constants are module-level and independently testable.
 """
 from __future__ import annotations
 
