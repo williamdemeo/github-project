@@ -269,8 +269,8 @@ def _parse_milestones(text: str) -> list[Milestone]:
     if next_section:
         ms_text = ms_text[:next_section.start()]
 
-    # Each milestone starts with `### Milestone N — Title`.
-    ms_blocks = re.split(r"^### Milestone (\d+) — (.+)$", ms_text, flags=re.MULTILINE)
+    # Accept colon headings and the original heading separator.
+    ms_blocks = re.split(r"^### Milestone (\d+)(?::| \u2014) (.+)$", ms_text, flags=re.MULTILINE)
 
     # ms_blocks[0] is preamble, then groups of (number, title, body).
     i = 1
@@ -293,7 +293,7 @@ def _parse_milestones(text: str) -> list[Milestone]:
 
         full_desc = desc
         if exit_crit:
-            full_desc += f"\n\n**Exit criterion:** {exit_crit}"
+            full_desc += f"\n\n**Exit criterion**: {exit_crit}"
 
         milestones.append(Milestone(
             number=num,
@@ -350,7 +350,7 @@ def _parse_explicit_labels(text: str) -> list[Label]:
 def _collect_labels_from_issues(text: str) -> list[Label]:
     """Collect unique label names referenced in issues' ``**Labels:**`` lines."""
     seen: dict[str, Label] = {}
-    for m in re.finditer(r"\*\*Labels:\*\*\s*(.+)", text):
+    for m in re.finditer(r"\*\*Labels(?::\*\*|\*\*:)[ \t]*(.*)", text):
         for raw in m.group(1).split(","):
             name = raw.strip().strip("`").strip()
             if name and name not in seen:
@@ -383,20 +383,22 @@ def _parse_issues(text: str) -> list[Issue]:
         raw_body = re.sub(r"\n---+\s*$", "", raw_body).strip()
 
         # Extract labels from the **Labels:** line.
-        labels_match = re.search(r"\*\*Labels:\*\*\s*(.+)", raw_body)
+        labels_match = re.search(r"\*\*Labels(?::\*\*|\*\*:)[ \t]*(.*)", raw_body)
         labels: list[str] = []
         if labels_match:
             label_str = labels_match.group(1).strip()
-            labels = [lbl.strip().strip("`") for lbl in label_str.split(",")]
+            labels = [lbl.strip().strip("`") for lbl in label_str.split(",")
+                      if lbl.strip().strip("`")]
 
         # Build the issue body: drop the metadata lines.  Assignees is
         # GitHub-owned state rendered by update; if a new issue was
         # authored by copying a rendered block, that line is not content.
         body_lines = [
             line for line in raw_body.split("\n")
-            if not line.strip().startswith("**Labels:**")
-            and not line.strip().startswith("**Milestone:**")
-            and not line.strip().startswith("**Assignees:**")
+            if not re.match(
+                r"^\*\*(?:Labels|Milestone|Assignees)(?::\*\*|\*\*:)",
+                line.strip(),
+            )
         ]
         body = "\n".join(body_lines).strip()
         body = re.sub(r"^\n+", "", body)
@@ -769,18 +771,14 @@ def lint_plan(text: str) -> tuple[Problem, ...]:
                 _line_of(text, m.start()),
             ))
 
-    # Same hazard one level up: `### Milestone 1 - Core` (hyphen, not
-    # em-dash) silently parses to nothing, which would otherwise also
-    # disable every milestone-consistency check below.  Only NUMBERED
-    # headings are scanned — prose headings like `### Milestone
-    # dependencies` are legitimate (the exemplar plans use them).
-    milestone_heading_re = re.compile(r"^### Milestone (\d+) — (.+)$")
+    # Check numbered headings; prose headings remain legitimate.
+    milestone_heading_re = re.compile(r"^### Milestone (\d+)(?::| \u2014) (.+)$")
     for m in re.finditer(r"^### Milestone\s+\d+\b[^\n]*$", scannable, re.MULTILINE):
         if not milestone_heading_re.match(m.group(0)):
             problems.append(Problem(
                 "error",
-                f"malformed milestone heading {m.group(0)!r} — expected "
-                f"`### Milestone N — Title` (em-dash)",
+                f"malformed milestone heading {m.group(0)!r}; expected "
+                f"`### Milestone N: Title` (legacy separator also accepted)",
                 _line_of(text, m.start()),
             ))
 

@@ -30,9 +30,9 @@ class RenderIssue(unittest.TestCase):
                   labels=("milestone-1-core",))
         )
         self.assertIn("### Issue M1-1: Set up (#7)\n", out)
-        # Canonical `**Labels:**` — the same spelling the plan parser
+        # Canonical `**Labels**:`, the spelling the plan parser
         # recognizes, so rendered blocks are valid plan input.
-        self.assertIn("**Labels:** `milestone-1-core`\n", out)
+        self.assertIn("**Labels**: `milestone-1-core`\n", out)
         self.assertNotIn("closed", out)
         self.assertNotIn("Assignees", out)
 
@@ -47,7 +47,7 @@ class RenderIssue(unittest.TestCase):
             issue("M1-1", "[M1-1] Set up", gh_number=7,
                   assignees=("octocat", "hubot"))
         )
-        self.assertIn("**Assignees:** @octocat, @hubot\n", out)
+        self.assertIn("**Assignees**: @octocat, @hubot\n", out)
 
     def test_empty_body_placeholder(self) -> None:
         out = upd.render_issue(issue("M1-1", "[M1-1] Set up", body="", gh_number=7))
@@ -66,8 +66,8 @@ class RenderIssue(unittest.TestCase):
         self.assertEqual(reparsed[0].labels,
                          ("milestone-1-core", "documentation"))
         self.assertEqual(reparsed[0].gh_number, 7)
-        self.assertNotIn("**Labels:**", reparsed[0].body)
-        self.assertNotIn("**Assignees:**", reparsed[0].body)
+        self.assertNotIn("**Labels**:", reparsed[0].body)
+        self.assertNotIn("**Assignees**:", reparsed[0].body)
 
     def test_marker_in_live_body_is_neutralized(self) -> None:
         # A GitHub body containing marker-shaped text must not be able
@@ -147,8 +147,8 @@ class UnplannedRegion(unittest.TestCase):
                   body="Body.", state="closed")
         )
         self.assertIn("### Fix flaky timeout (#68, closed)\n", out)
-        self.assertIn("**Labels:** `agda-mcp`\n", out)
-        self.assertIn("**Assignees:** @octocat\n", out)
+        self.assertIn("**Labels**: `agda-mcp`\n", out)
+        self.assertIn("**Assignees**: @octocat\n", out)
         self.assertIn("Body.", out)
         self.assertNotIn("Issue :", out)
 
