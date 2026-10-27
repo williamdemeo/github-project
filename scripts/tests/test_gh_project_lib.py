@@ -535,10 +535,6 @@ class ParseIssuesJson(unittest.TestCase):
         self.assertEqual([i.gh_number for i in issues], [5])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PlainPunctuation(unittest.TestCase):
     def test_colon_plan_preserves_semantics(self) -> None:
         modern = (PLAN.replace("Milestone 1 \u2014 Core", "Milestone 1: Core")
@@ -564,3 +560,7 @@ class PlainPunctuation(unittest.TestCase):
                     "### Issue M1-1: Example\n\n" + marker + "\n\nBody.\n")
                 self.assertEqual(parsed[0].labels, ())
                 self.assertEqual(parsed[0].body, "Body.")
+
+
+if __name__ == "__main__":
+    unittest.main()
