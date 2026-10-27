@@ -186,7 +186,7 @@ class ParsePlan(unittest.TestCase):
         )
         self.assertIn("Build the core.", self.plan.milestones[0].description)
         self.assertIn(
-            "**Exit criterion:** Core works.", self.plan.milestones[0].description
+            "**Exit criterion**: Core works.", self.plan.milestones[0].description
         )
 
     def test_labels_from_explicit_section(self) -> None:
@@ -533,6 +533,33 @@ class ParseIssuesJson(unittest.TestCase):
         ])
         issues = lib._parse_issues_json(payload).unwrap()
         self.assertEqual([i.gh_number for i in issues], [5])
+
+
+class PlainPunctuation(unittest.TestCase):
+    def test_colon_plan_preserves_semantics(self) -> None:
+        modern = (PLAN.replace("Milestone 1 \u2014 Core", "Milestone 1: Core")
+                  .replace("Milestone 2 \u2014 Polish", "Milestone 2: Polish")
+                  .replace("**Labels:**", "**Labels**:")
+                  .replace("**Milestone:**", "**Milestone**:")
+                  .replace("**Description:**", "**Description**:")
+                  .replace("**Exit criterion:**", "**Exit criterion**:"))
+        self.assertEqual(parse_project_plan(modern), parse_project_plan(PLAN))
+        self.assertFalse(tuple(p for p in lib.lint_plan(modern)
+                               if p.severity == "error"))
+
+    def test_modern_metadata_without_label_section(self) -> None:
+        modern = (PLAN.replace("## Labels", "## Labelless")
+                  .replace("**Labels:**", "**Labels**:"))
+        self.assertEqual(parse_project_plan(modern),
+                         parse_project_plan(PLAN.replace("## Labels", "## Labelless")))
+
+    def test_empty_labels_do_not_consume_body(self) -> None:
+        for marker in ("**Labels:**", "**Labels**:"):
+            with self.subTest(marker=marker):
+                parsed = lib._parse_issues(
+                    "### Issue M1-1: Example\n\n" + marker + "\n\nBody.\n")
+                self.assertEqual(parsed[0].labels, ())
+                self.assertEqual(parsed[0].body, "Body.")
 
 
 if __name__ == "__main__":

@@ -273,3 +273,12 @@ flake.nix                 the engine package + apps (+ dev shell)
 ## License
 
 [MIT](LICENSE).
+
+## Plan punctuation
+
+Milestone headings accept `### Milestone N: Title` as well as the original
+separator.  Issue metadata accepts both `**Labels**:` and the older spelling
+with the colon inside bold; the same rule applies when stripping milestone
+and assignee metadata from issue bodies.  Updates render punctuation outside
+bold.  Existing plans still parse; their next update normalizes the generated
+metadata.

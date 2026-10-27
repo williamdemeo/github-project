@@ -154,11 +154,11 @@ def render_issue(issue: Issue) -> str:
     labels = neutralize_markers(", ".join(f"`{lbl}`" for lbl in issue.labels))
     # Assignees are GitHub-owned state (like open/closed); render them so
     # the file answers "who is on this?" without a browser.  Both
-    # metadata lines use the canonical `**Word:**` spelling that the
+    # metadata lines use the canonical `**Word**:` spelling that the
     # plan parser recognizes (and strips from bodies), so a rendered
     # block can be copied as the starting point for a new issue.
     assignees = (
-        f"**Assignees:** {', '.join('@' + a for a in issue.assignees)}\n\n"
+        f"**Assignees**: {', '.join('@' + a for a in issue.assignees)}\n\n"
         if issue.assignees else ""
     )
     body = issue.body.strip() if issue.body else EMPTY_BODY_PLACEHOLDER
@@ -166,7 +166,7 @@ def render_issue(issue: Issue) -> str:
     return (
         f"### Issue {issue.id}: {title} ({ref})\n"
         f"\n"
-        f"**Labels:** {labels}\n"
+        f"**Labels**: {labels}\n"
         f"\n"
         f"{assignees}"
         f"{body}\n"
@@ -184,7 +184,7 @@ def render_unplanned_issue(issue: Issue) -> str:
     ref = f"#{issue.gh_number}{state_suffix}" if issue.gh_number else "(no number)"
     labels = neutralize_markers(", ".join(f"`{lbl}`" for lbl in issue.labels))
     assignees = (
-        f"**Assignees:** {', '.join('@' + a for a in issue.assignees)}\n\n"
+        f"**Assignees**: {', '.join('@' + a for a in issue.assignees)}\n\n"
         if issue.assignees else ""
     )
     body = issue.body.strip() if issue.body else EMPTY_BODY_PLACEHOLDER
@@ -193,7 +193,7 @@ def render_unplanned_issue(issue: Issue) -> str:
     return (
         f"### {title} ({ref})\n"
         f"\n"
-        f"**Labels:** {labels}\n"
+        f"**Labels**: {labels}\n"
         f"\n"
         f"{assignees}"
         f"{body}\n"
@@ -205,7 +205,7 @@ def render_unplanned_region(
 ) -> str:
     if not unplanned:
         return (
-            "\n_(no organically-filed issues — every issue on GitHub "
+            "\n_(no organically-filed issues; every issue on GitHub "
             "carries a `[MN-k]` planning prefix)_\n"
         )
     parts: list[str] = []
